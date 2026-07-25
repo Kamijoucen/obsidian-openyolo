@@ -210,6 +210,28 @@ describe('SessionStateStore', () => {
     expect(entry).toMatchObject({ kind: 'assistant', streaming: false })
   })
 
+  it('tracks the wait for the first visible response update', () => {
+    const store = new SessionStateStore('test')
+    store.appendLocalUserMessage('hello', [{ type: 'text', text: 'hello' }])
+    store.markRunning()
+
+    expect(store.getState().awaitingResponse).toBe(true)
+
+    store.applyUpdate({
+      sessionUpdate: 'user_message_chunk',
+      messageId: 'u1',
+      content: { type: 'text', text: 'hello' },
+    } as SessionUpdate)
+    expect(store.getState().awaitingResponse).toBe(true)
+
+    store.applyUpdate({
+      sessionUpdate: 'agent_thought_chunk',
+      messageId: 'm1',
+      content: { type: 'text', text: 'thinking' },
+    } as SessionUpdate)
+    expect(store.getState().awaitingResponse).toBe(false)
+  })
+
   it('tracks pending permission on the tool call', () => {
     const store = new SessionStateStore('test')
     const options = [

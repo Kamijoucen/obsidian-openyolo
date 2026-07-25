@@ -17,6 +17,7 @@ export const en: TranslationKeys = {
     historyEmpty: 'No previous sessions',
     inputPlaceholder: 'Ask anything… ( / for commands)',
     stopGenerating: 'Stop generating',
+    generating: 'Generating…',
     attachFile: 'Attach file',
     attach: 'Add attachment',
     searchNotes: 'Search notes…',

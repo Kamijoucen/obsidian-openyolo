@@ -58,7 +58,7 @@ export const AssistantEntryView = memo(function AssistantEntryView({
 }) {
   const { settings } = useSettings()
   const { t } = useLanguage()
-  const [reasoningOpen, setReasoningOpen] = useState(false)
+  const [reasoningOpen, setReasoningOpen] = useState(true)
   const showReasoning = settings.showReasoning && entry.reasoning.length > 0
 
   return (
@@ -94,7 +94,6 @@ export const AssistantEntryView = memo(function AssistantEntryView({
         </div>
       ) : null}
       {entry.text ? <StreamingMarkdown content={entry.text} /> : null}
-      {entry.streaming ? <span className="yolo-acp-streaming-caret" /> : null}
     </div>
   )
 })

@@ -17,6 +17,7 @@ export const zh: TranslationKeys = {
     historyEmpty: '暂无历史会话',
     inputPlaceholder: '输入消息…（ / 唤起命令）',
     stopGenerating: '停止生成',
+    generating: '正在生成…',
     attachFile: '添加文件',
     attach: '添加附件',
     searchNotes: '搜索笔记…',

@@ -47,6 +47,7 @@ export function createInitialSessionState(title: string): ChatSessionState {
     sessionId: null,
     title,
     status: 'idle',
+    awaitingResponse: false,
     error: null,
     entries: [],
     plan: [],
@@ -94,7 +95,13 @@ export class SessionStateStore {
   }
 
   setStatus(status: ChatSessionState['status'], error: string | null = null) {
-    this.state = { ...this.state, status, error }
+    this.state = {
+      ...this.state,
+      status,
+      awaitingResponse:
+        status === 'running' ? this.state.awaitingResponse : false,
+      error,
+    }
     this.emit()
   }
 
@@ -137,7 +144,13 @@ export class SessionStateStore {
   }
 
   markRunning() {
-    this.setStatus('running')
+    this.state = {
+      ...this.state,
+      status: 'running',
+      awaitingResponse: true,
+      error: null,
+    }
+    this.emit()
   }
 
   markTurnEnd(stopReason: StopReason | null) {
@@ -150,6 +163,7 @@ export class SessionStateStore {
       ...this.state,
       entries,
       status: 'idle',
+      awaitingResponse: false,
       lastStopReason: stopReason,
     }
     this.emit()
@@ -161,12 +175,15 @@ export class SessionStateStore {
         this.applyUserChunk(update.messageId ?? '', update.content)
         break
       case 'agent_message_chunk':
+        this.markResponseStarted()
         this.applyAssistantChunk(update.messageId ?? '', update.content, false)
         break
       case 'agent_thought_chunk':
+        this.markResponseStarted()
         this.applyAssistantChunk(update.messageId ?? '', update.content, true)
         break
       case 'tool_call':
+        this.markResponseStarted()
         this.upsertToolCall({
           toolCallId: update.toolCallId,
           title: update.title,
@@ -179,9 +196,11 @@ export class SessionStateStore {
         })
         break
       case 'tool_call_update':
+        this.markResponseStarted()
         this.upsertToolCall(update)
         break
       case 'plan':
+        this.markResponseStarted()
         this.state = { ...this.state, plan: update.entries }
         break
       case 'usage_update':
@@ -212,6 +231,11 @@ export class SessionStateStore {
         return
     }
     this.emit()
+  }
+
+  private markResponseStarted() {
+    if (!this.state.awaitingResponse) return
+    this.state = { ...this.state, awaitingResponse: false }
   }
 
   setPendingPermission(toolCall: ToolCallUpdate, options: PermissionOption[]) {

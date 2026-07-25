@@ -216,18 +216,24 @@
   min-width: 0;
 }
 
-.yolo-acp-streaming-caret {
-  display: inline-block;
-  width: 7px;
-  height: 14px;
-  background: var(--text-accent);
-  animation: yolo-acp-caret-blink 1s step-end infinite;
-  border-radius: 1px;
+.yolo-acp-generating {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  padding-block: 2px;
 }
 
-@keyframes yolo-acp-caret-blink {
-  50% {
-    opacity: 0;
+.yolo-acp-generating-spinner {
+  flex-shrink: 0;
+  color: var(--interactive-accent);
+  animation: yolo-setup-spin 1s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .yolo-acp-generating-spinner {
+    animation: none;
   }
 }
 

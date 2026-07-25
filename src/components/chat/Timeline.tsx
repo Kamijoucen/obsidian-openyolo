@@ -1,3 +1,4 @@
+import { Loader2 } from 'lucide-react'
 import { memo, useEffect, useRef } from 'react'
 
 import { useLanguage } from '../../contexts/language-context'
@@ -73,6 +74,20 @@ function Timeline({ state, onPermissionRespond }: TimelineProps) {
             return null
         }
       })}
+      {state.awaitingResponse ? (
+        <div
+          className="yolo-chat-timeline-row yolo-acp-generating"
+          role="status"
+          aria-live="polite"
+        >
+          <Loader2
+            size={14}
+            className="yolo-acp-generating-spinner"
+            aria-hidden="true"
+          />
+          <span>{t('chat.generating', 'Generating…')}</span>
+        </div>
+      ) : null}
     </div>
   )
 }

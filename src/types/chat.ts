@@ -68,6 +68,7 @@ export type ChatSessionState = {
   sessionId: string | null
   title: string
   status: SessionStatus
+  awaitingResponse: boolean
   error: string | null
   entries: TimelineEntry[]
   plan: PlanEntry[]
