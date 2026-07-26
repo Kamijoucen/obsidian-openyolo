@@ -1,5 +1,5 @@
 import {
-  DEFAULT_SYSTEM_PROMPT,
+  DEFAULT_SYSTEM_PROMPT_ZH,
   MANAGED_BLOCK_END,
   MANAGED_BLOCK_START,
   removeManagedBlock,
@@ -8,9 +8,9 @@ import {
 
 describe('upsertManagedBlock', () => {
   it('creates content for an empty file', () => {
-    const result = upsertManagedBlock('', DEFAULT_SYSTEM_PROMPT)
+    const result = upsertManagedBlock('', DEFAULT_SYSTEM_PROMPT_ZH)
     expect(result).toContain(MANAGED_BLOCK_START)
-    expect(result).toContain(DEFAULT_SYSTEM_PROMPT.trim())
+    expect(result).toContain(DEFAULT_SYSTEM_PROMPT_ZH.trim())
     expect(result).toContain(MANAGED_BLOCK_END)
   })
 

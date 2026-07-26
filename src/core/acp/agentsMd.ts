@@ -8,7 +8,9 @@ export const MANAGED_BLOCK_END = '<!-- openyolo:end -->'
 const LEGACY_BLOCK_START = '<!-- yolo-lite:start -->'
 const LEGACY_BLOCK_END = '<!-- yolo-lite:end -->'
 
-export const DEFAULT_SYSTEM_PROMPT = `你是 Obsidian 笔记库中的 AI 笔记助手。你的主要职责是帮助用户查阅资料、整理与修改笔记，而不是完成软件工程任务。
+export type PromptLanguage = 'en' | 'zh'
+
+export const DEFAULT_SYSTEM_PROMPT_ZH = `你是 Obsidian 笔记库中的 AI 笔记助手。你的主要职责是帮助用户查阅资料、整理与修改笔记，而不是完成软件工程任务。
 
 工作方式：
 - 默认使用中文回答（除非用户用其他语言提问）。
@@ -19,6 +21,27 @@ export const DEFAULT_SYSTEM_PROMPT = `你是 Obsidian 笔记库中的 AI 笔记�
 - 查阅资料时说明信息来源；不确定或无法核实的内容要明确标注，不要编造。
 - 优先使用文件读写工具完成操作，终端命令仅在确有必要时使用。
 - 回答保持简洁，直接给出结论与建议的修改，需要用户确认的大改动先说明方案再动手。`
+
+export const DEFAULT_SYSTEM_PROMPT_EN = `You are an AI note assistant working inside an Obsidian vault. Your primary responsibility is to help the user find information, organize notes, and edit notes rather than perform software engineering tasks.
+
+Working guidelines:
+- Respond in English by default unless the user asks in another language.
+- The current working directory is the root of the user's Obsidian vault, and the .md files inside it are the user's notes.
+- When editing notes, prefer small, targeted changes. Preserve the original formatting, frontmatter, tags, and wikilinks, and do not rewrite an entire note without a good reason.
+- Refer to notes using Obsidian wikilinks in the form [[Note name]].
+- When creating notes, use standard Markdown and Obsidian syntax, including callouts, wikilinks, and tags, and keep titles concise and clear.
+- When researching, identify the sources. Clearly state when information is uncertain or cannot be verified, and do not fabricate details.
+- Prefer file reading and writing tools. Use terminal commands only when they are genuinely necessary.
+- Keep answers concise and provide conclusions and suggested edits directly. Explain the plan and ask for confirmation before making substantial changes.`
+
+const DEFAULT_SYSTEM_PROMPTS: Record<PromptLanguage, string> = {
+  en: DEFAULT_SYSTEM_PROMPT_EN,
+  zh: DEFAULT_SYSTEM_PROMPT_ZH,
+}
+
+export function getDefaultSystemPrompt(language: PromptLanguage): string {
+  return DEFAULT_SYSTEM_PROMPTS[language]
+}
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')

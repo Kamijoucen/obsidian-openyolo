@@ -1,4 +1,8 @@
-import { DEFAULT_SYSTEM_PROMPT } from '../../core/acp/agentsMd'
+import {
+  DEFAULT_SYSTEM_PROMPT_ZH,
+  getDefaultSystemPrompt,
+} from '../../core/acp/agentsMd'
+import type { PromptLanguage } from '../../core/acp/agentsMd'
 
 export type ChatMode = 'plan' | 'build'
 
@@ -22,12 +26,15 @@ export const DEFAULT_SETTINGS: YoloSettings = {
   autoApprovePermissions: false,
   showReasoning: true,
   debugLog: false,
-  systemPrompt: DEFAULT_SYSTEM_PROMPT,
+  systemPrompt: DEFAULT_SYSTEM_PROMPT_ZH,
   manageAgentsMd: true,
   savedConfigSelections: {},
 }
 
-export function normalizeSettings(raw: unknown): YoloSettings {
+export function normalizeSettings(
+  raw: unknown,
+  language: PromptLanguage = 'zh',
+): YoloSettings {
   const source =
     typeof raw === 'object' && raw !== null
       ? (raw as Record<string, unknown>)
@@ -61,7 +68,7 @@ export function normalizeSettings(raw: unknown): YoloSettings {
     systemPrompt:
       typeof source.systemPrompt === 'string' && source.systemPrompt.trim()
         ? source.systemPrompt
-        : DEFAULT_SETTINGS.systemPrompt,
+        : getDefaultSystemPrompt(language),
     manageAgentsMd:
       typeof source.manageAgentsMd === 'boolean'
         ? source.manageAgentsMd

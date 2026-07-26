@@ -3,7 +3,7 @@ import { Notice, Platform, Plugin, WorkspaceLeaf, addIcon } from 'obsidian'
 import { ChatView } from './ChatView'
 import { syncAgentsMd } from './core/acp/agentsMd'
 import type { AcpSessionService } from './core/acp/service'
-import { loadLocale, t } from './i18n'
+import { getUiLanguage, loadLocale, t } from './i18n'
 import {
   DEFAULT_SETTINGS,
   YoloSettings,
@@ -123,7 +123,7 @@ export default class YoloPlugin extends Plugin {
   }
 
   async loadSettings() {
-    this.settings = normalizeSettings(await this.loadData())
+    this.settings = normalizeSettings(await this.loadData(), getUiLanguage())
   }
 
   async saveSettings(next: YoloSettings) {

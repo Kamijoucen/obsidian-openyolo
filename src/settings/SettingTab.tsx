@@ -1,9 +1,8 @@
 import { App, PluginSettingTab, Setting } from 'obsidian'
 
-import { t } from '../i18n'
+import { getDefaultSystemPrompt } from '../core/acp/agentsMd'
+import { getUiLanguage, t } from '../i18n'
 import type YoloPlugin from '../main'
-
-import { DEFAULT_SETTINGS } from './schema/setting.types'
 
 export class YoloSettingTab extends PluginSettingTab {
   constructor(
@@ -17,6 +16,7 @@ export class YoloSettingTab extends PluginSettingTab {
     const { containerEl } = this
     containerEl.empty()
     const { settings } = this.plugin
+    const defaultSystemPrompt = getDefaultSystemPrompt(getUiLanguage())
 
     new Setting(containerEl).setName(t('settings.title')).setHeading()
 
@@ -94,28 +94,28 @@ export class YoloSettingTab extends PluginSettingTab {
           .setIcon('reset')
           .setTooltip(t('settings.resetPrompt'))
           .onClick(async () => {
+            if (promptSaveTimer) window.clearTimeout(promptSaveTimer)
             await this.plugin.saveSettings({
               ...this.plugin.settings,
-              systemPrompt: DEFAULT_SETTINGS.systemPrompt,
+              systemPrompt: defaultSystemPrompt,
             })
             this.display()
           }),
       )
 
+    let promptSaveTimer: number | null = null
     const promptArea = containerEl.createEl('textarea', {
       cls: 'yolo-settings-prompt-textarea',
     })
     promptArea.value = settings.systemPrompt
     promptArea.rows = 12
     promptArea.spellcheck = false
-    let promptSaveTimer: number | null = null
     promptArea.addEventListener('input', () => {
       if (promptSaveTimer) window.clearTimeout(promptSaveTimer)
       promptSaveTimer = window.setTimeout(() => {
         void this.plugin.saveSettings({
           ...this.plugin.settings,
-          systemPrompt:
-            promptArea.value.trim() || DEFAULT_SETTINGS.systemPrompt,
+          systemPrompt: promptArea.value.trim() || defaultSystemPrompt,
         })
       }, 600)
     })
