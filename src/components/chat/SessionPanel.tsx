@@ -19,10 +19,9 @@ function vaultBasePath(app: App): string {
   return typeof adapter.getBasePath === 'function' ? adapter.getBasePath() : ''
 }
 
-function mimeTypeFor(name: string): string {
-  const ext = name.split('.').pop()?.toLowerCase() ?? ''
-  if (ext === 'md' || ext === 'markdown') return 'text/markdown'
-  if (ext === 'json' || ext === 'jsonc') return 'application/json'
+function mimeTypeFor(_name: string): string {
+  // opencode 只会把 text/plain 附件的内容内联进提示词（其余 MIME 会变成
+  // base64 文件附件，多数模型无法读取），因此文本附件统一用 text/plain。
   return 'text/plain'
 }
 

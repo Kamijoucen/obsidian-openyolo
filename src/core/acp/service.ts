@@ -3,9 +3,13 @@ import type {
   ContentBlock,
   Implementation,
   ListSessionsResponse,
+  LoadSessionResponse,
+  NewSessionResponse,
+  PromptResponse,
   SessionConfigOption,
   SessionMode,
   SessionNotification,
+  SetSessionConfigOptionResponse,
 } from '@agentclientprotocol/sdk'
 import type { App } from 'obsidian'
 
@@ -199,19 +203,22 @@ export class AcpSessionService {
         onSessionUpdate: (notification) =>
           this.handleSessionUpdate(notification),
         onPermissionPending: (params) => {
+          this.debug('session/request_permission', params)
           const tabId = this.tabBySession.get(params.sessionId)
           const tab = tabId ? this.tabs.get(tabId) : null
           tab?.store.setPendingPermission(params.toolCall, params.options)
         },
         onPermissionSettled: (toolCallId) => {
+          this.debug('permission settled', { toolCallId })
           for (const tab of this.tabs.values()) {
             tab.store.clearPendingPermission(toolCallId)
           }
         },
         onStderr: (line) => {
-          if (this.getSettings().debugLog) {
-            console.debug('[yolo-acp stderr]', line)
-          }
+          this.debug('stderr', line)
+        },
+        onDebug: (event, payload) => {
+          this.debug(event, payload)
         },
         onProcessExit: (code, signal) => {
           this.handleProcessExit(code, signal)
@@ -245,6 +252,7 @@ export class AcpSessionService {
   }
 
   private handleSessionUpdate(notification: SessionNotification) {
+    this.debug('session/update', notification)
     const tabId = this.tabBySession.get(notification.sessionId)
     if (!tabId) return
     const tab = this.tabs.get(tabId)
@@ -371,7 +379,7 @@ export class AcpSessionService {
     store.setStatus('loading')
     this.emitTabsChange()
     try {
-      const response = await this.agent().request('session/load', {
+      const response = await this.request<LoadSessionResponse>('session/load', {
         sessionId,
         cwd: this.vaultCwd(),
         mcpServers: [],
@@ -403,9 +411,7 @@ export class AcpSessionService {
       this.tabBySession.delete(sessionId)
       this.permissionManager.cancelSession(sessionId)
       if (this.client?.isConnected) {
-        void this.agent()
-          .request('session/close', { sessionId })
-          .catch(() => undefined)
+        void this.request('session/close', { sessionId }).catch(() => undefined)
       }
     }
     this.emitTabsChange()
@@ -417,13 +423,11 @@ export class AcpSessionService {
     const sessions: HistorySessionInfo[] = []
     let cursor: string | null | undefined = null
     do {
-      const response: ListSessionsResponse = await this.agent().request(
-        'session/list',
-        {
+      const response: ListSessionsResponse =
+        await this.request<ListSessionsResponse>('session/list', {
           cwd: this.vaultCwd(),
           cursor,
-        },
-      )
+        })
       for (const item of response.sessions) {
         // Sessions that never received a prompt are empty; hide them so
         // eagerly created sessions don't clutter the history list.
@@ -445,7 +449,7 @@ export class AcpSessionService {
   private async ensureSession(tab: TabRecord): Promise<string> {
     if (tab.sessionId) return tab.sessionId
     if (tab.closed) throw new Error('Tab is closed')
-    const response = await this.agent().request('session/new', {
+    const response = await this.request<NewSessionResponse>('session/new', {
       cwd: this.vaultCwd(),
       mcpServers: [],
     })
@@ -479,12 +483,10 @@ export class AcpSessionService {
         available.some((mode) => mode.id === desired) &&
         modes?.current !== desired
       ) {
-        await this.agent()
-          .request('session/set_mode', {
-            sessionId: response.sessionId,
-            modeId: desired,
-          })
-          .catch(() => undefined)
+        await this.request('session/set_mode', {
+          sessionId: response.sessionId,
+          modeId: desired,
+        }).catch(() => undefined)
         tab.store.setModeCurrent(desired)
       }
     }
@@ -495,6 +497,31 @@ export class AcpSessionService {
   private agent(): ClientContext {
     if (!this.client) throw new Error('ACP client is not connected')
     return this.client.agent()
+  }
+
+  private debug(event: string, payload?: unknown) {
+    if (!this.getSettings().debugLog) return
+    // 刻意用 console.log:console.debug 会被 DevTools 默认级别过滤隐藏,
+    // 该输出受设置开关控制,关闭时无任何打印。
+    // eslint-disable-next-line no-console
+    console.log('[openyolo]', event, payload ?? '')
+  }
+
+  private async request<T>(method: string, params?: unknown): Promise<T> {
+    this.debug(`→ ${method}`, params)
+    try {
+      const response = await this.agent().request<T>(method, params)
+      this.debug(`← ${method}`, response)
+      return response
+    } catch (error) {
+      this.debug(`✕ ${method}`, errorMessage(error))
+      throw error
+    }
+  }
+
+  private async notify(method: string, params?: unknown): Promise<void> {
+    this.debug(`→ ${method}`, params)
+    await this.agent().notify(method, params)
   }
 
   /**
@@ -530,12 +557,14 @@ export class AcpSessionService {
   ) {
     const selections = this.resolveConfigSelections(options)
     for (const selection of selections) {
-      await this.agent()
-        .request('session/set_config_option', {
+      await this.request<SetSessionConfigOptionResponse>(
+        'session/set_config_option',
+        {
           sessionId,
           configId: selection.configId,
           value: selection.value,
-        })
+        },
+      )
         .then((res) => {
           if (res.configOptions) {
             this.setLastConfigOptions(res.configOptions)
@@ -566,7 +595,7 @@ export class AcpSessionService {
     this.emitActivity()
     try {
       const sessionId = await this.ensureSession(tab)
-      const response = await this.agent().request('session/prompt', {
+      const response = await this.request<PromptResponse>('session/prompt', {
         sessionId,
         prompt: blocks,
       })
@@ -582,9 +611,9 @@ export class AcpSessionService {
     const tab = this.tabs.get(tabId)
     if (!tab || !tab.sessionId || !this.client?.isConnected) return
     this.permissionManager.cancelSession(tab.sessionId)
-    await this.agent()
-      .notify('session/cancel', { sessionId: tab.sessionId })
-      .catch(() => undefined)
+    await this.notify('session/cancel', { sessionId: tab.sessionId }).catch(
+      () => undefined,
+    )
   }
 
   async setMode(tabId: string, modeId: string): Promise<void> {
@@ -593,9 +622,10 @@ export class AcpSessionService {
     tab.desiredMode = modeId
     tab.store.setModeCurrent(modeId)
     if (tab.sessionId && this.client?.isConnected) {
-      await this.agent()
-        .request('session/set_mode', { sessionId: tab.sessionId, modeId })
-        .catch(() => undefined)
+      await this.request('session/set_mode', {
+        sessionId: tab.sessionId,
+        modeId,
+      }).catch(() => undefined)
     }
   }
 
@@ -619,11 +649,14 @@ export class AcpSessionService {
       return
     }
     try {
-      const response = await this.agent().request('session/set_config_option', {
-        sessionId: tab.sessionId,
-        configId,
-        value,
-      })
+      const response = await this.request<SetSessionConfigOptionResponse>(
+        'session/set_config_option',
+        {
+          sessionId: tab.sessionId,
+          configId,
+          value,
+        },
+      )
       if (response.configOptions) {
         this.setLastConfigOptions(response.configOptions)
         tab.store.applyConfigOptions(response.configOptions)

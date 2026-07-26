@@ -19,6 +19,7 @@ export type AcpClientHooks = {
   onPermissionPending: (params: RequestPermissionRequest) => void
   onPermissionSettled: (toolCallId: string) => void
   onStderr?: (line: string) => void
+  onDebug?: (event: string, payload: unknown) => void
   onProcessExit?: (code: number | null, signal: string | null) => void
 }
 
@@ -99,9 +100,11 @@ export class AcpClient {
         })
       })
       .onRequest('fs/read_text_file', ({ params }) => {
+        hooks.onDebug?.('fs/read_text_file', params)
         return hooks.fsBridge.readTextFile(params)
       })
       .onRequest('fs/write_text_file', ({ params }) => {
+        hooks.onDebug?.('fs/write_text_file', params)
         return hooks.fsBridge.writeTextFile(params)
       })
     const connection = app.connect(stream)
@@ -117,6 +120,7 @@ export class AcpClient {
       },
     })
     this.agentInfoValue = initResponse.agentInfo ?? null
+    hooks.onDebug?.('initialize', initResponse)
     this.connection = connection
   }
 
