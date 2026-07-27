@@ -1,6 +1,6 @@
 {
   "name": "obsidian-openyolo",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Obsidian chat client powered by opencode via the Agent Client Protocol (ACP).",
   "main": "main.js",
   "scripts": {
