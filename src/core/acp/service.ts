@@ -523,7 +523,9 @@ export class AcpSessionService {
 
   /**
    * 计算会话应应用的 configOption 选择：使用用户持久化的选择；
-   * 持久化值已从列表下架时回退到列表第一项并更新记录。
+   * 持久化值已从列表下架时回退到列表第一项。仅模型的回退会写回记录——
+   * 思考强度等选项的可选值随模型而变,对当前模型无效不代表用户改了
+   * 偏好,保留原值以便切回支持的模型时恢复。
    */
   private resolveConfigSelections(
     options: SessionConfigOption[],
@@ -537,7 +539,7 @@ export class AcpSessionService {
       const savedValue = saved[option.id]
       if (savedValue === undefined) continue
       const desired = values.includes(savedValue) ? savedValue : values[0]
-      if (desired !== savedValue) {
+      if (desired !== savedValue && option.id === 'model') {
         this.persistConfigSelection(option.id, desired)
       }
       if (desired !== option.currentValue) {
@@ -552,23 +554,34 @@ export class AcpSessionService {
     sessionId: string,
     options: SessionConfigOption[],
   ) {
-    const selections = this.resolveConfigSelections(options)
-    for (const selection of selections) {
-      await this.request<SetSessionConfigOptionResponse>(
+    let currentOptions = options
+    const apply = async (selection: { configId: string; value: string }) => {
+      const res = await this.request<SetSessionConfigOptionResponse>(
         'session/set_config_option',
         {
           sessionId,
           configId: selection.configId,
           value: selection.value,
         },
-      )
-        .then((res) => {
-          if (res.configOptions) {
-            this.setLastConfigOptions(res.configOptions)
-            tab.store.applyConfigOptions(res.configOptions)
-          }
-        })
-        .catch(() => undefined)
+      ).catch(() => null)
+      if (res?.configOptions) {
+        currentOptions = res.configOptions
+        this.setLastConfigOptions(res.configOptions)
+        tab.store.applyConfigOptions(res.configOptions)
+      }
+    }
+    // 模型必须先应用:思考强度等选项的可选值随模型切换而变化,必须用
+    // 切换后返回的 configOptions 再解析,否则强度会在默认模型的变体列表
+    // 里被漏判/误判,并在模型切换时被 opencode 重置为首个变体。
+    const modelSelection = this.resolveConfigSelections(currentOptions).find(
+      (selection) => selection.configId === 'model',
+    )
+    if (modelSelection) {
+      await apply(modelSelection)
+    }
+    for (const selection of this.resolveConfigSelections(currentOptions)) {
+      if (selection.configId === 'model') continue
+      await apply(selection)
     }
   }
 
