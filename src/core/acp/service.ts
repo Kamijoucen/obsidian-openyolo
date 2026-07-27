@@ -501,10 +501,7 @@ export class AcpSessionService {
 
   private debug(event: string, payload?: unknown) {
     if (!this.getSettings().debugLog) return
-    // 刻意用 console.log:console.debug 会被 DevTools 默认级别过滤隐藏,
-    // 该输出受设置开关控制,关闭时无任何打印。
-    // eslint-disable-next-line no-console
-    console.log('[openyolo]', event, payload ?? '')
+    console.debug('[openyolo]', event, payload ?? '')
   }
 
   private async request<T>(method: string, params?: unknown): Promise<T> {
