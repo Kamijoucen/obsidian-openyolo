@@ -1,8 +1,11 @@
 import { App, PluginSettingTab, Setting } from 'obsidian'
+import type { SettingDefinitionItem } from 'obsidian'
 
 import { getDefaultSystemPrompt } from '../core/acp/agentsMd'
 import { getUiLanguage, t } from '../i18n'
 import type YoloPlugin from '../main'
+
+import type { YoloSettings } from './schema/setting.types'
 
 export class YoloSettingTab extends PluginSettingTab {
   constructor(
@@ -10,104 +13,154 @@ export class YoloSettingTab extends PluginSettingTab {
     private readonly plugin: YoloPlugin,
   ) {
     super(app, plugin)
+    this.plugin.getSessionService().onAvailabilityChange(() => this.update())
   }
 
-  display(): void {
-    const { containerEl } = this
-    containerEl.empty()
-    const { settings } = this.plugin
-    const defaultSystemPrompt = getDefaultSystemPrompt(getUiLanguage())
-
-    new Setting(containerEl).setName(t('settings.title')).setHeading()
-
-    new Setting(containerEl).setName(t('settings.connection')).setHeading()
-
+  override getSettingDefinitions(): SettingDefinitionItem[] {
     const service = this.plugin.getSessionService()
     const agentInfo = service.getAgentInfo()
     const availability = service.getAvailability()
-    new Setting(containerEl)
-      .setName(t('settings.agentInfo'))
-      .setDesc(
-        agentInfo
-          ? `${agentInfo.name} ${agentInfo.version} · ${t('setup.connected')}`
-          : availability === 'starting'
-            ? t('setup.starting')
-            : t('settings.notConnected'),
-      )
 
-    new Setting(containerEl)
-      .setName(t('settings.opencodePath'))
-      .setDesc(t('settings.opencodePathDesc'))
-      .addText((text) =>
-        text
-          .setPlaceholder(
-            process.platform === 'win32'
-              ? 'C:\\path\\to\\opencode.exe'
-              : '/usr/local/bin/opencode',
-          )
-          .setValue(settings.opencodePath)
-          .onChange(async (value) => {
-            await this.plugin.saveSettings({
-              ...this.plugin.settings,
-              opencodePath: value.trim(),
-            })
-          }),
-      )
+    return [
+      {
+        type: 'group',
+        heading: t('settings.connection'),
+        items: [
+          {
+            name: t('settings.agentInfo'),
+            desc: agentInfo
+              ? `${agentInfo.name} ${agentInfo.version} · ${t('setup.connected')}`
+              : availability === 'starting'
+                ? t('setup.starting')
+                : (service.getStartError() ?? t('settings.notConnected')),
+          },
+          {
+            name: t('settings.opencodePath'),
+            desc: t('settings.opencodePathDesc'),
+            control: {
+              type: 'text',
+              key: 'opencodePath',
+              placeholder:
+                process.platform === 'win32'
+                  ? 'C:\\path\\to\\opencode.exe'
+                  : '/usr/local/bin/opencode',
+            },
+          },
+          {
+            name: t('settings.opencodeArgs'),
+            desc: t('settings.opencodeArgsDesc'),
+            control: {
+              type: 'textarea',
+              key: 'opencodeArgs',
+              placeholder: '--flag\n--option=value',
+            },
+          },
+        ],
+      },
+      {
+        type: 'group',
+        heading: t('settings.behavior'),
+        items: [
+          {
+            name: t('settings.manageAgentsMd'),
+            desc: t('settings.manageAgentsMdDesc'),
+            control: { type: 'toggle', key: 'manageAgentsMd' },
+          },
+          {
+            name: t('settings.systemPrompt'),
+            desc: t('settings.systemPromptDesc'),
+            render: (setting) => this.renderSystemPrompt(setting),
+          },
+          {
+            name: t('settings.defaultMode'),
+            desc: t('settings.defaultModeDesc'),
+            control: {
+              type: 'dropdown',
+              key: 'defaultMode',
+              options: {
+                build: t('chat.modeBuild'),
+                plan: t('chat.modePlan'),
+              },
+            },
+          },
+          {
+            name: t('settings.autoApprove'),
+            desc: t('settings.autoApproveDesc'),
+            control: { type: 'toggle', key: 'autoApprovePermissions' },
+          },
+          {
+            name: t('settings.showReasoning'),
+            desc: t('settings.showReasoningDesc'),
+            control: { type: 'toggle', key: 'showReasoning' },
+          },
+          {
+            name: t('settings.debugLog'),
+            desc: t('settings.debugLogDesc'),
+            control: { type: 'toggle', key: 'debugLog' },
+          },
+        ],
+      },
+    ]
+  }
 
-    new Setting(containerEl)
-      .setName(t('settings.opencodeArgs'))
-      .setDesc(t('settings.opencodeArgsDesc'))
-      .addTextArea((text) =>
-        text
-          .setPlaceholder('--flag\n--option=value')
-          .setValue(settings.opencodeArgs.join('\n'))
-          .onChange(async (value) => {
-            await this.plugin.saveSettings({
-              ...this.plugin.settings,
-              opencodeArgs: value
-                .split('\n')
-                .map((line) => line.trim())
-                .filter(Boolean),
-            })
-          }),
-      )
+  override getControlValue(key: string): unknown {
+    const value = this.plugin.settings[key as keyof YoloSettings]
+    return Array.isArray(value) ? value.join('\n') : value
+  }
 
-    new Setting(containerEl).setName(t('settings.behavior')).setHeading()
+  override async setControlValue(key: string, value: unknown): Promise<void> {
+    const next = { ...this.plugin.settings }
+    switch (key) {
+      case 'opencodePath':
+        next.opencodePath = String(value).trim()
+        break
+      case 'opencodeArgs':
+        next.opencodeArgs = String(value)
+          .split('\n')
+          .map((line) => line.trim())
+          .filter(Boolean)
+        break
+      case 'defaultMode': {
+        const mode =
+          value === 'plan' ? 'plan' : value === 'build' ? 'build' : null
+        if (!mode) return
+        next.defaultMode = mode
+        break
+      }
+      case 'manageAgentsMd':
+      case 'autoApprovePermissions':
+      case 'showReasoning':
+      case 'debugLog':
+        next[key] = Boolean(value)
+        break
+      default:
+        return
+    }
+    await this.plugin.saveSettings(next)
+  }
 
-    new Setting(containerEl)
-      .setName(t('settings.manageAgentsMd'))
-      .setDesc(t('settings.manageAgentsMdDesc'))
-      .addToggle((toggle) =>
-        toggle.setValue(settings.manageAgentsMd).onChange(async (value) => {
+  private renderSystemPrompt(setting: Setting): () => void {
+    const defaultSystemPrompt = getDefaultSystemPrompt(getUiLanguage())
+    let promptSaveTimer: number | null = null
+
+    setting.addExtraButton((button) =>
+      button
+        .setIcon('reset')
+        .setTooltip(t('settings.resetPrompt'))
+        .onClick(async () => {
+          if (promptSaveTimer) window.clearTimeout(promptSaveTimer)
           await this.plugin.saveSettings({
             ...this.plugin.settings,
-            manageAgentsMd: value,
+            systemPrompt: defaultSystemPrompt,
           })
+          this.update()
         }),
-      )
+    )
 
-    new Setting(containerEl)
-      .setName(t('settings.systemPrompt'))
-      .setDesc(t('settings.systemPromptDesc'))
-      .addExtraButton((button) =>
-        button
-          .setIcon('reset')
-          .setTooltip(t('settings.resetPrompt'))
-          .onClick(async () => {
-            if (promptSaveTimer) window.clearTimeout(promptSaveTimer)
-            await this.plugin.saveSettings({
-              ...this.plugin.settings,
-              systemPrompt: defaultSystemPrompt,
-            })
-            this.display()
-          }),
-      )
-
-    let promptSaveTimer: number | null = null
-    const promptArea = containerEl.createEl('textarea', {
+    const promptArea = createEl('textarea', {
       cls: 'yolo-settings-prompt-textarea',
     })
-    promptArea.value = settings.systemPrompt
+    promptArea.value = this.plugin.settings.systemPrompt
     promptArea.rows = 12
     promptArea.spellcheck = false
     promptArea.addEventListener('input', () => {
@@ -119,60 +172,11 @@ export class YoloSettingTab extends PluginSettingTab {
         })
       }, 600)
     })
+    setting.settingEl.insertAdjacentElement('afterend', promptArea)
 
-    new Setting(containerEl)
-      .setName(t('settings.defaultMode'))
-      .setDesc(t('settings.defaultModeDesc'))
-      .addDropdown((dropdown) =>
-        dropdown
-          .addOption('build', t('chat.modeBuild'))
-          .addOption('plan', t('chat.modePlan'))
-          .setValue(settings.defaultMode)
-          .onChange(async (value) => {
-            if (value !== 'build' && value !== 'plan') return
-            await this.plugin.saveSettings({
-              ...this.plugin.settings,
-              defaultMode: value,
-            })
-          }),
-      )
-
-    new Setting(containerEl)
-      .setName(t('settings.autoApprove'))
-      .setDesc(t('settings.autoApproveDesc'))
-      .addToggle((toggle) =>
-        toggle
-          .setValue(settings.autoApprovePermissions)
-          .onChange(async (value) => {
-            await this.plugin.saveSettings({
-              ...this.plugin.settings,
-              autoApprovePermissions: value,
-            })
-          }),
-      )
-
-    new Setting(containerEl)
-      .setName(t('settings.showReasoning'))
-      .setDesc(t('settings.showReasoningDesc'))
-      .addToggle((toggle) =>
-        toggle.setValue(settings.showReasoning).onChange(async (value) => {
-          await this.plugin.saveSettings({
-            ...this.plugin.settings,
-            showReasoning: value,
-          })
-        }),
-      )
-
-    new Setting(containerEl)
-      .setName(t('settings.debugLog'))
-      .setDesc(t('settings.debugLogDesc'))
-      .addToggle((toggle) =>
-        toggle.setValue(settings.debugLog).onChange(async (value) => {
-          await this.plugin.saveSettings({
-            ...this.plugin.settings,
-            debugLog: value,
-          })
-        }),
-      )
+    return () => {
+      if (promptSaveTimer) window.clearTimeout(promptSaveTimer)
+      promptArea.remove()
+    }
   }
 }

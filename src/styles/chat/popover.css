@@ -383,10 +383,8 @@
       var(--background-secondary) 88%,
       transparent
     );
-    box-shadow: 0 18px 30px -24px color-mix(in srgb, var(
-            --background-modifier-box-shadow
-          )
-          90%, transparent);
+    box-shadow: 0 18px 30px -24px
+      color-mix(in srgb, var(--background-modifier-box-shadow) 90%, transparent);
   }
 
   55% {

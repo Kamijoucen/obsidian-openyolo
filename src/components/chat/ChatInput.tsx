@@ -77,8 +77,7 @@ function resolveFilePath(file: File): string | null {
     const req = (window as unknown as { require?: (id: string) => unknown })
       .require
     const electron = req?.('electron') as
-      | { webUtils?: { getPathForFile?: (target: File) => string } }
-      | undefined
+      { webUtils?: { getPathForFile?: (target: File) => string } } | undefined
     const resolved = electron?.webUtils?.getPathForFile?.(file)
     if (resolved) return resolved
   } catch {

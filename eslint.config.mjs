@@ -2,9 +2,8 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import js from '@eslint/js'
-import importPlugin from 'eslint-plugin-import'
+import { importX } from 'eslint-plugin-import-x'
 import obsidianmd from 'eslint-plugin-obsidianmd'
-import react from 'eslint-plugin-react'
 import reactHooks from 'eslint-plugin-react-hooks'
 import globals from 'globals'
 import tseslint from 'typescript-eslint'
@@ -13,9 +12,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const tsFiles = ['**/*.{ts,tsx}']
 
 const commonRules = {
-  'react/react-in-jsx-scope': 'off',
-  'react/prop-types': 'off',
-  'import/no-unresolved': 'off',
+  'import-x/no-unresolved': 'off',
   'obsidianmd/ui/sentence-case': 'off',
   'obsidianmd/ui/sentence-case-json': 'off',
   'obsidianmd/ui/sentence-case-locale-module': 'off',
@@ -29,7 +26,7 @@ const commonRules = {
       allowSeparatedGroups: true,
     },
   ],
-  'import/order': [
+  'import-x/order': [
     'error',
     {
       'newlines-between': 'always',
@@ -92,14 +89,8 @@ export default tseslint.config(
       },
     },
     plugins: {
-      react,
       'react-hooks': reactHooks,
-      import: importPlugin,
-    },
-    settings: {
-      react: {
-        version: 'detect',
-      },
+      'import-x': importX,
     },
     rules: commonRules,
   },
@@ -113,6 +104,13 @@ export default tseslint.config(
       },
     },
     rules: typescriptRuleOverrides,
+  },
+  {
+    // 测试运行在 node 环境，部分用例需借助 globalThis 模拟 window
+    files: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
+    rules: {
+      'obsidianmd/no-global-this': 'off',
+    },
   },
   {
     ignores: [

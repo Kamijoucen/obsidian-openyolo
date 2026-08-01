@@ -1,8 +1,8 @@
 {
   "id": "openyolo",
   "name": "OpenYOLO",
-  "version": "1.0.4",
-  "minAppVersion": "1.12.7",
+  "version": "1.0.5",
+  "minAppVersion": "1.33.4",
   "description": "Chat client powered by opencode via the Agent Client Protocol (ACP).",
   "author": "Kamijoucen",
   "authorUrl": "https://github.com/Kamijoucen",

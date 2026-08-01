@@ -92,7 +92,7 @@ export function normalizeDisplayMathDelimiters(markdown: string): string {
 
       let normalized = ''
       let inlineCodeTicks = 0
-      for (let index = 0; index < line.length; ) {
+      for (let index = 0; index < line.length;) {
         if (!displayMathOpen && line[index] === '`') {
           let runLength = 1
           while (line[index + runLength] === '`') {

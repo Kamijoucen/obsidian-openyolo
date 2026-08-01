@@ -1,5 +1,3 @@
-import type { SessionUpdate } from '@agentclientprotocol/sdk'
-
 import { SessionStateStore } from './mapper'
 
 function collect(store: SessionStateStore) {
@@ -17,17 +15,17 @@ describe('SessionStateStore', () => {
       sessionUpdate: 'agent_message_chunk',
       messageId: 'm1',
       content: { type: 'text', text: 'Hello' },
-    } as SessionUpdate)
+    })
     store.applyUpdate({
       sessionUpdate: 'agent_message_chunk',
       messageId: 'm1',
       content: { type: 'text', text: ' world' },
-    } as SessionUpdate)
+    })
     store.applyUpdate({
       sessionUpdate: 'agent_message_chunk',
       messageId: 'm2',
       content: { type: 'text', text: 'second' },
-    } as SessionUpdate)
+    })
 
     const entries = store.getState().entries
     expect(entries).toHaveLength(2)
@@ -45,12 +43,12 @@ describe('SessionStateStore', () => {
       sessionUpdate: 'agent_thought_chunk',
       messageId: 'm1',
       content: { type: 'text', text: 'thinking' },
-    } as SessionUpdate)
+    })
     store.applyUpdate({
       sessionUpdate: 'agent_message_chunk',
       messageId: 'm1',
       content: { type: 'text', text: 'answer' },
-    } as SessionUpdate)
+    })
 
     const [entry] = store.getState().entries
     expect(entry).toMatchObject({
@@ -66,12 +64,12 @@ describe('SessionStateStore', () => {
       sessionUpdate: 'user_message_chunk',
       messageId: 'u1',
       content: { type: 'text', text: 'hi' },
-    } as SessionUpdate)
+    })
     store.applyUpdate({
       sessionUpdate: 'user_message_chunk',
       messageId: 'u1',
       content: { type: 'text', text: ' there' },
-    } as SessionUpdate)
+    })
 
     const entries = store.getState().entries
     expect(entries).toHaveLength(1)
@@ -84,7 +82,7 @@ describe('SessionStateStore', () => {
       sessionUpdate: 'user_message_chunk',
       messageId: 'u1',
       content: { type: 'text', text: 'hi' },
-    } as SessionUpdate)
+    })
     // opencode 把附件展开为 user 消息里的 synthetic 文本（模型上下文），
     // 回放时带 audience=['assistant']；不应混入用户气泡。
     store.applyUpdate({
@@ -95,7 +93,7 @@ describe('SessionStateStore', () => {
         text: 'Called the Read tool with the following input: {}',
         annotations: { audience: ['assistant'] },
       },
-    } as SessionUpdate)
+    })
     store.applyUpdate({
       sessionUpdate: 'agent_message_chunk',
       messageId: 'a1',
@@ -104,12 +102,12 @@ describe('SessionStateStore', () => {
         text: 'hidden',
         annotations: { audience: ['user'] },
       },
-    } as SessionUpdate)
+    })
     store.applyUpdate({
       sessionUpdate: 'agent_message_chunk',
       messageId: 'a1',
       content: { type: 'text', text: 'shown' },
-    } as SessionUpdate)
+    })
 
     const entries = store.getState().entries
     expect(entries).toHaveLength(2)
@@ -125,18 +123,18 @@ describe('SessionStateStore', () => {
       title: 'read file',
       kind: 'read',
       status: 'pending',
-    } as SessionUpdate)
+    })
     store.applyUpdate({
       sessionUpdate: 'tool_call_update',
       toolCallId: 't1',
       status: 'in_progress',
-    } as SessionUpdate)
+    })
     store.applyUpdate({
       sessionUpdate: 'tool_call_update',
       toolCallId: 't1',
       status: 'completed',
       content: [{ type: 'content', content: { type: 'text', text: 'done' } }],
-    } as SessionUpdate)
+    })
 
     const entries = store.getState().entries
     expect(entries).toHaveLength(1)
@@ -158,7 +156,7 @@ describe('SessionStateStore', () => {
       toolCallId: 't9',
       title: 'late',
       status: 'completed',
-    } as SessionUpdate)
+    })
     const entries = store.getState().entries
     expect(entries).toHaveLength(1)
     expect(entries[0]).toMatchObject({
@@ -172,20 +170,20 @@ describe('SessionStateStore', () => {
     store.applyUpdate({
       sessionUpdate: 'plan',
       entries: [{ content: 'step 1', status: 'in_progress', priority: 'high' }],
-    } as SessionUpdate)
+    })
     store.applyUpdate({
       sessionUpdate: 'usage_update',
       used: 10,
       size: 100,
-    } as SessionUpdate)
+    })
     store.applyUpdate({
       sessionUpdate: 'current_mode_update',
       currentModeId: 'plan',
-    } as SessionUpdate)
+    })
     store.applyUpdate({
       sessionUpdate: 'available_commands_update',
       availableCommands: [{ name: 'init', description: 'init project' }],
-    } as SessionUpdate)
+    })
 
     const state = store.getState()
     expect(state.plan).toHaveLength(1)
@@ -200,7 +198,7 @@ describe('SessionStateStore', () => {
       sessionUpdate: 'agent_message_chunk',
       messageId: 'm1',
       content: { type: 'text', text: 'hi' },
-    } as SessionUpdate)
+    })
     store.markRunning()
     expect(store.getState().status).toBe('running')
     store.markTurnEnd('end_turn')
@@ -221,14 +219,14 @@ describe('SessionStateStore', () => {
       sessionUpdate: 'user_message_chunk',
       messageId: 'u1',
       content: { type: 'text', text: 'hello' },
-    } as SessionUpdate)
+    })
     expect(store.getState().awaitingResponse).toBe(true)
 
     store.applyUpdate({
       sessionUpdate: 'agent_thought_chunk',
       messageId: 'm1',
       content: { type: 'text', text: 'thinking' },
-    } as SessionUpdate)
+    })
     expect(store.getState().awaitingResponse).toBe(false)
   })
 
@@ -262,11 +260,11 @@ describe('SessionStateStore', () => {
       sessionUpdate: 'agent_message_chunk',
       messageId: 'm1',
       content: { type: 'text', text: 'a' },
-    } as SessionUpdate)
+    })
     store.applyUpdate({
       sessionUpdate: 'plan',
       entries: [],
-    } as SessionUpdate)
+    })
     expect(snapshots.length).toBe(2)
   })
 
@@ -276,13 +274,13 @@ describe('SessionStateStore', () => {
       sessionUpdate: 'agent_message_chunk',
       messageId: 'm1',
       content: { type: 'text', text: 'a' },
-    } as SessionUpdate)
+    })
     const before = store.getState().entries[0]
     store.applyUpdate({
       sessionUpdate: 'agent_message_chunk',
       messageId: 'm1',
       content: { type: 'text', text: 'b' },
-    } as SessionUpdate)
+    })
     const after = store.getState().entries[0]
     expect(after).not.toBe(before)
     expect(after).toMatchObject({ text: 'ab' })
@@ -296,13 +294,13 @@ describe('SessionStateStore', () => {
       title: 'read',
       kind: 'read',
       status: 'pending',
-    } as SessionUpdate)
+    })
     const before = store.getState().entries[0]
     store.applyUpdate({
       sessionUpdate: 'tool_call_update',
       toolCallId: 't1',
       status: 'in_progress',
-    } as SessionUpdate)
+    })
     const after = store.getState().entries[0]
     expect(after).not.toBe(before)
     expect(after.kind === 'tool' && after.toolCall.status).toBe('in_progress')
