@@ -37,14 +37,19 @@
   font-size: var(--font-ui-smaller);
 }
 
-.yolo-toolcall-header {
-  all: unset;
+/* 用 `.yolo-toolcall` 前缀提升特异度，压住 Obsidian 全局
+ * `button:not(.clickable-icon)` 的背景/边框/投影。 */
+.yolo-toolcall button.yolo-toolcall-header {
+  appearance: none;
+  margin: 0;
+  font: inherit;
+  letter-spacing: inherit;
+  text-align: left;
   box-sizing: border-box;
   width: 100%;
-  background: transparent !important;
-  background-color: transparent !important;
-  border: 0 !important;
-  box-shadow: none !important;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
   outline: none;
   padding: 2px var(--yolo-toolcall-header-padding-x);
   display: flex;
@@ -58,15 +63,15 @@
   transition: color 120ms ease;
 }
 
-.yolo-toolcall-header:focus-visible {
+.yolo-toolcall button.yolo-toolcall-header:focus-visible {
   outline: 2px solid
     color-mix(in srgb, var(--interactive-accent) 55%, transparent);
   outline-offset: 1px;
-  box-shadow: none !important;
-  background: transparent !important;
+  box-shadow: none;
+  background: transparent;
 }
 
-.yolo-toolcall-header:hover {
+.yolo-toolcall button.yolo-toolcall-header:hover {
   background-color: transparent;
   color: var(--text-normal);
 }

@@ -28,14 +28,14 @@
   }
 }
 
-/* 选择器写成 `button.yolo-todo-panel__toggle` 是为了对抗 Obsidian
+/* 选择器带上 `.yolo-todo-panel` 前缀是为了压住 Obsidian
  * `app.css` 里的 `button:not(.clickable-icon) { box-shadow: var(--input-shadow) }`
- * ——必须保持等同或更高特异度，否则会画出一条贴在 header 底部的投影线。 */
+ * ——必须保持更高特异度，否则会画出一条贴在 header 底部的投影线。 */
 .yolo-todo-panel__header {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 22px 22px;
   align-items: center;
-  column-gap: 2px;
+  gap: 2px;
   width: 100%;
   padding-right: var(--size-2-2);
   box-sizing: border-box;
@@ -43,7 +43,7 @@
   font-size: var(--font-ui-smaller);
 }
 
-button.yolo-todo-panel__toggle {
+.yolo-todo-panel button.yolo-todo-panel__toggle {
   display: flex;
   align-items: center;
   gap: var(--size-4-2);
@@ -53,9 +53,9 @@ button.yolo-todo-panel__toggle {
   padding: var(--size-2-2) var(--size-4-2);
   box-sizing: border-box;
   appearance: none;
-  background: transparent !important;
-  border: 0 !important;
-  box-shadow: none !important;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
   outline: 0;
   cursor: pointer;
   color: inherit;
@@ -64,7 +64,7 @@ button.yolo-todo-panel__toggle {
   text-align: left;
 }
 
-button.yolo-todo-panel__icon-button {
+.yolo-todo-panel button.yolo-todo-panel__icon-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -75,10 +75,10 @@ button.yolo-todo-panel__icon-button {
   padding: 0;
   box-sizing: border-box;
   appearance: none;
-  background: transparent !important;
-  border: 0 !important;
+  background: transparent;
+  border: 0;
   border-radius: var(--radius-s);
-  box-shadow: none !important;
+  box-shadow: none;
   color: var(--text-muted);
   cursor: pointer;
   line-height: 0;
@@ -185,7 +185,6 @@ button.yolo-todo-panel__icon-button svg {
 .yolo-todo-panel__item--completed .yolo-todo-panel__text {
   color: var(--text-faint);
   text-decoration: line-through;
-  text-decoration-thickness: 1px;
 }
 
 .yolo-todo-panel__icon-spin {

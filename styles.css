@@ -719,23 +719,8 @@ body.is-mobile .yolo-chat-container--mobile-keyboard-managed {
   padding: 0;
 }
 
-/* Hide delete button in badges within compact mode */
-.yolo-chat-user-input-wrapper--compact .yolo-chat-user-input-file-badge-delete {
-  display: none;
-}
-
-/* Make badges non-interactive in compact mode */
-.yolo-chat-user-input-wrapper--compact .yolo-chat-user-input-file-badge {
-  cursor: default;
-  pointer-events: none;
-}
-
 .yolo-user-message-card .yolo-chat-user-input-container {
   width: fit-content;
-}
-
-.yolo-user-message-card__badges .yolo-chat-user-input-file-badge {
-  pointer-events: none;
 }
 
 .yolo-chat-user-input-files {
@@ -1045,7 +1030,7 @@ button.yolo-chat-user-input-submit-button-circle.is-stop:hover:not(:disabled) {
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  padding: 6px 10px 6px 12px !important;
+  padding: 6px 10px 6px 12px;
 }
 
 .yolo-chat-mode-select-item__icon {
@@ -1096,44 +1081,47 @@ button.yolo-chat-user-input-submit-button-circle.is-stop:hover:not(:disabled) {
 }
 
 /* Self-drawn dropdown rows: Ask remains a plain button; Agent hosts the YOLO
- * switch while the outer row keeps the same popover-item sizing as before. */
+ * switch while the outer row keeps the same popover-item sizing as before.
+ * 背景/边框/投影的重置由 acp.css 的
+ * `.yolo-popover-surface button.yolo-chat-mode-select-item` 统一负责。 */
 button.yolo-chat-mode-select-item {
   width: 100%;
   height: auto;
   text-align: left;
   font: inherit;
   color: inherit;
-  background: transparent !important;
-  border: none !important;
-  box-shadow: none !important;
   cursor: pointer;
   -webkit-appearance: none;
   appearance: none;
 }
 
-button.yolo-chat-mode-select-item:focus-visible {
+.yolo-popover-surface button.yolo-chat-mode-select-item:focus-visible {
   outline: none;
-  box-shadow: inset 0 0 0 2px var(--interactive-accent) !important;
+  box-shadow: inset 0 0 0 2px var(--interactive-accent);
   border-radius: var(--radius-s);
 }
 
-button.yolo-chat-mode-select-item:hover,
-button.yolo-chat-mode-select-item[data-highlighted] {
+.yolo-popover-surface button.yolo-chat-mode-select-item:hover,
+.yolo-popover-surface button.yolo-chat-mode-select-item[data-highlighted] {
   background: color-mix(
     in srgb,
     var(--background-modifier-hover) 90%,
     transparent
-  ) !important;
+  );
 }
 
-button.yolo-chat-mode-select-item[data-state='checked'] {
+.yolo-popover-surface button.yolo-chat-mode-select-item[data-state='checked'],
+.yolo-popover-surface
+  button.yolo-chat-mode-select-item[data-state='checked']:hover,
+.yolo-popover-surface
+  button.yolo-chat-mode-select-item[data-state='checked'][data-highlighted] {
   background: color-mix(
     in srgb,
     var(--background-modifier-hover) 45%,
     transparent
-  ) !important;
+  );
   box-shadow: inset 0 0 0 1px
-    color-mix(in srgb, var(--background-modifier-border) 60%, transparent) !important;
+    color-mix(in srgb, var(--background-modifier-border) 60%, transparent);
 }
 
 .yolo-chat-mode-agent-card__title-row .yolo-chat-mode-select-item__label {
@@ -1199,109 +1187,6 @@ button.yolo-chat-mode-select-item[data-state='checked'] {
     transform: translateY(0);
   }
 }
-
-.yolo-chat-user-input-file-badge {
-  display: flex;
-  align-items: center;
-  background-color: var(--background-secondary);
-  border: 1px solid var(--background-modifier-border);
-  border-radius: var(--radius-s);
-  font-size: var(--font-smallest);
-  padding: var(--size-2-1) var(--size-4-1);
-  gap: var(--size-2-1);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: var(--yolo-mention-badge-max-width, 260px);
-  cursor: pointer;
-}
-
-.yolo-chat-user-input-file-badge.yolo-chat-user-input-file-badge-focused {
-    border: 1px solid var(--interactive-accent);
-  }
-
-.yolo-chat-user-input-file-badge svg {
-    flex-shrink: 0;
-  }
-
-.yolo-chat-user-input-file-badge:hover {
-  background-color: var(--background-modifier-hover);
-}
-
-button.yolo-chat-user-input-file-badge-delete,
-.yolo-chat-user-input-file-badge-delete {
-  appearance: none !important;
-  -webkit-appearance: none !important;
-  background: transparent !important;
-  border: 0 !important;
-  box-shadow: none !important;
-  outline: none !important;
-  border-radius: 0 !important;
-  padding: 0 !important;
-  margin: 0 !important;
-  min-height: 0 !important;
-  min-width: 0 !important;
-  width: auto !important;
-  height: 100%;
-  display: flex;
-  align-items: center;
-  color: var(--text-muted);
-  cursor: pointer;
-}
-
-button.yolo-chat-user-input-file-badge-delete:hover,
-button.yolo-chat-user-input-file-badge-delete:focus,
-button.yolo-chat-user-input-file-badge-delete:focus-visible,
-.yolo-chat-user-input-file-badge-delete:hover,
-.yolo-chat-user-input-file-badge-delete:focus,
-.yolo-chat-user-input-file-badge-delete:focus-visible {
-  appearance: none !important;
-  -webkit-appearance: none !important;
-  background: transparent !important;
-  border: 0 !important;
-  box-shadow: none !important;
-  outline: none !important;
-}
-
-.yolo-chat-user-input-file-badge-expand {
-  height: 100%;
-  display: flex;
-  align-items: center;
-  color: var(--text-muted);
-  cursor: pointer;
-  padding: 0 var(--size-2-1);
-  border-radius: var(--radius-s);
-}
-
-.yolo-chat-user-input-file-badge-expand:hover {
-  color: var(--text-normal);
-  background-color: var(--background-modifier-hover);
-}
-
-.yolo-chat-user-input-file-badge-name {
-  display: flex;
-  flex-direction: row;
-  gap: var(--size-2-1);
-  flex-grow: 1;
-  overflow: hidden;
-  align-items: center;
-  min-width: 0;
-}
-
-.yolo-chat-user-input-file-badge-name-icon {
-  color: var(--text-muted);
-}
-
-.yolo-chat-user-input-file-badge-name span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.yolo-chat-user-input-file-badge-name-suffix {
-  color: var(--text-faint);
-  flex-grow: 0;
-}
 .yolo-sr-only {
   position: absolute;
   width: 1px;
@@ -1341,14 +1226,19 @@ button.yolo-chat-user-input-file-badge-delete:focus-visible,
   font-size: var(--font-ui-smaller);
 }
 
-.yolo-toolcall-header {
-  all: unset;
+/* 用 `.yolo-toolcall` 前缀提升特异度，压住 Obsidian 全局
+ * `button:not(.clickable-icon)` 的背景/边框/投影。 */
+.yolo-toolcall button.yolo-toolcall-header {
+  appearance: none;
+  margin: 0;
+  font: inherit;
+  letter-spacing: inherit;
+  text-align: left;
   box-sizing: border-box;
   width: 100%;
-  background: transparent !important;
-  background-color: transparent !important;
-  border: 0 !important;
-  box-shadow: none !important;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
   outline: none;
   padding: 2px var(--yolo-toolcall-header-padding-x);
   display: flex;
@@ -1362,15 +1252,15 @@ button.yolo-chat-user-input-file-badge-delete:focus-visible,
   transition: color 120ms ease;
 }
 
-.yolo-toolcall-header:focus-visible {
+.yolo-toolcall button.yolo-toolcall-header:focus-visible {
   outline: 2px solid
     color-mix(in srgb, var(--interactive-accent) 55%, transparent);
   outline-offset: 1px;
-  box-shadow: none !important;
-  background: transparent !important;
+  box-shadow: none;
+  background: transparent;
 }
 
-.yolo-toolcall-header:hover {
+.yolo-toolcall button.yolo-toolcall-header:hover {
   background-color: transparent;
   color: var(--text-normal);
 }
@@ -1728,28 +1618,6 @@ button.yolo-chat-user-input-file-badge-delete:focus-visible,
   ) {
   font-family: var(--yolo-chat-response-font-family);
 }
-@keyframes yolo-mention-menu-subpanel-enter-right {
-  from {
-    opacity: 0;
-    transform: translateX(-6px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
-}
-
-@keyframes yolo-mention-menu-subpanel-enter-left {
-  from {
-    opacity: 0;
-    transform: translateX(6px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
-}
-
 .yolo-popover-surface ul {
   padding: 0;
   list-style: none;
@@ -2163,36 +2031,9 @@ button.yolo-chat-user-input-file-badge-delete:focus-visible,
   }
 }
 
-@keyframes yolo-apply-resolve-in {
-  from {
-    opacity: 0.74;
-    transform: translateY(2px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .yolo-spinner,
-  .yolo-chat-list-dropdown-content,
-  .yolo-chat-list-dropdown-item-title-text,
-  .yolo-chat-list-dropdown-item-title-skeleton,
-  .yolo-inline-review-widget,
-  .yolo-diff-block--resolved,
-  .yolo-diff-block--resolved .yolo-apply-markdown-preview,
-  .yolo-inline-review-floating-rail,
-  .yolo-inline-review-floating-actions,
-  .yolo-inline-review-floating-actions .yolo-apply-action,
-  .yolo-plan-preview-panel--streaming.is-exiting,
-  .yolo-plan-preview-panel--streaming.is-exiting
-    .yolo-plan-streaming-preview-body,
-  .yolo-plan-preview-panel--resolved.is-entering,
-  .yolo-plan-streaming-preview-line,
-  .yolo-mention-menu-subpanel {
-    animation: none !important;
-    transition: none !important;
+  .yolo-chat-container .yolo-spinner {
+    animation: none;
   }
 }
 
@@ -2350,14 +2191,14 @@ button.yolo-chat-input-model-select .yolo-chat-input-model-select__icon {
   }
 }
 
-/* 选择器写成 `button.yolo-todo-panel__toggle` 是为了对抗 Obsidian
+/* 选择器带上 `.yolo-todo-panel` 前缀是为了压住 Obsidian
  * `app.css` 里的 `button:not(.clickable-icon) { box-shadow: var(--input-shadow) }`
- * ——必须保持等同或更高特异度，否则会画出一条贴在 header 底部的投影线。 */
+ * ——必须保持更高特异度，否则会画出一条贴在 header 底部的投影线。 */
 .yolo-todo-panel__header {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 22px 22px;
   align-items: center;
-  column-gap: 2px;
+  gap: 2px;
   width: 100%;
   padding-right: var(--size-2-2);
   box-sizing: border-box;
@@ -2365,7 +2206,7 @@ button.yolo-chat-input-model-select .yolo-chat-input-model-select__icon {
   font-size: var(--font-ui-smaller);
 }
 
-button.yolo-todo-panel__toggle {
+.yolo-todo-panel button.yolo-todo-panel__toggle {
   display: flex;
   align-items: center;
   gap: var(--size-4-2);
@@ -2375,9 +2216,9 @@ button.yolo-todo-panel__toggle {
   padding: var(--size-2-2) var(--size-4-2);
   box-sizing: border-box;
   appearance: none;
-  background: transparent !important;
-  border: 0 !important;
-  box-shadow: none !important;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
   outline: 0;
   cursor: pointer;
   color: inherit;
@@ -2386,7 +2227,7 @@ button.yolo-todo-panel__toggle {
   text-align: left;
 }
 
-button.yolo-todo-panel__icon-button {
+.yolo-todo-panel button.yolo-todo-panel__icon-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -2397,10 +2238,10 @@ button.yolo-todo-panel__icon-button {
   padding: 0;
   box-sizing: border-box;
   appearance: none;
-  background: transparent !important;
-  border: 0 !important;
+  background: transparent;
+  border: 0;
   border-radius: var(--radius-s);
-  box-shadow: none !important;
+  box-shadow: none;
   color: var(--text-muted);
   cursor: pointer;
   line-height: 0;
@@ -2507,7 +2348,6 @@ button.yolo-todo-panel__icon-button svg {
 .yolo-todo-panel__item--completed .yolo-todo-panel__text {
   color: var(--text-faint);
   text-decoration: line-through;
-  text-decoration-thickness: 1px;
 }
 
 .yolo-todo-panel__icon-spin {
@@ -3228,14 +3068,24 @@ button.yolo-chat-user-input-submit-button-circle.is-stop {
   margin-bottom: 6px;
 }
 
-/* 设置页提示词编辑框 */
+/* 设置页提示词编辑框：整行换行布局，编辑框占满控件区宽度 */
+
+.yolo-settings-prompt-setting {
+  flex-wrap: wrap;
+}
+
+.yolo-settings-prompt-setting .setting-item-control {
+  flex: 1 1 100%;
+  flex-wrap: wrap;
+  gap: var(--size-2-2);
+}
 
 .yolo-settings-prompt-textarea {
   display: block;
   width: 100%;
   box-sizing: border-box;
   min-height: 240px;
-  margin: 0 0 var(--size-4-3);
+  margin: 0;
   padding: var(--size-4-2) var(--size-4-3);
   font-family: var(--font-monospace);
   font-size: var(--font-ui-smaller);

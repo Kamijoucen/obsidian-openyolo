@@ -588,23 +588,8 @@ body.is-mobile .yolo-chat-container--mobile-keyboard-managed {
   padding: 0;
 }
 
-/* Hide delete button in badges within compact mode */
-.yolo-chat-user-input-wrapper--compact .yolo-chat-user-input-file-badge-delete {
-  display: none;
-}
-
-/* Make badges non-interactive in compact mode */
-.yolo-chat-user-input-wrapper--compact .yolo-chat-user-input-file-badge {
-  cursor: default;
-  pointer-events: none;
-}
-
 .yolo-user-message-card .yolo-chat-user-input-container {
   width: fit-content;
-}
-
-.yolo-user-message-card__badges .yolo-chat-user-input-file-badge {
-  pointer-events: none;
 }
 
 .yolo-chat-user-input-files {
@@ -914,7 +899,7 @@ button.yolo-chat-user-input-submit-button-circle.is-stop:hover:not(:disabled) {
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  padding: 6px 10px 6px 12px !important;
+  padding: 6px 10px 6px 12px;
 }
 
 .yolo-chat-mode-select-item__icon {
@@ -965,44 +950,47 @@ button.yolo-chat-user-input-submit-button-circle.is-stop:hover:not(:disabled) {
 }
 
 /* Self-drawn dropdown rows: Ask remains a plain button; Agent hosts the YOLO
- * switch while the outer row keeps the same popover-item sizing as before. */
+ * switch while the outer row keeps the same popover-item sizing as before.
+ * 背景/边框/投影的重置由 acp.css 的
+ * `.yolo-popover-surface button.yolo-chat-mode-select-item` 统一负责。 */
 button.yolo-chat-mode-select-item {
   width: 100%;
   height: auto;
   text-align: left;
   font: inherit;
   color: inherit;
-  background: transparent !important;
-  border: none !important;
-  box-shadow: none !important;
   cursor: pointer;
   -webkit-appearance: none;
   appearance: none;
 }
 
-button.yolo-chat-mode-select-item:focus-visible {
+.yolo-popover-surface button.yolo-chat-mode-select-item:focus-visible {
   outline: none;
-  box-shadow: inset 0 0 0 2px var(--interactive-accent) !important;
+  box-shadow: inset 0 0 0 2px var(--interactive-accent);
   border-radius: var(--radius-s);
 }
 
-button.yolo-chat-mode-select-item:hover,
-button.yolo-chat-mode-select-item[data-highlighted] {
+.yolo-popover-surface button.yolo-chat-mode-select-item:hover,
+.yolo-popover-surface button.yolo-chat-mode-select-item[data-highlighted] {
   background: color-mix(
     in srgb,
     var(--background-modifier-hover) 90%,
     transparent
-  ) !important;
+  );
 }
 
-button.yolo-chat-mode-select-item[data-state='checked'] {
+.yolo-popover-surface button.yolo-chat-mode-select-item[data-state='checked'],
+.yolo-popover-surface
+  button.yolo-chat-mode-select-item[data-state='checked']:hover,
+.yolo-popover-surface
+  button.yolo-chat-mode-select-item[data-state='checked'][data-highlighted] {
   background: color-mix(
     in srgb,
     var(--background-modifier-hover) 45%,
     transparent
-  ) !important;
+  );
   box-shadow: inset 0 0 0 1px
-    color-mix(in srgb, var(--background-modifier-border) 60%, transparent) !important;
+    color-mix(in srgb, var(--background-modifier-border) 60%, transparent);
 }
 
 .yolo-chat-mode-agent-card__title-row .yolo-chat-mode-select-item__label {
@@ -1067,107 +1055,4 @@ button.yolo-chat-mode-select-item[data-state='checked'] {
     filter: blur(0);
     transform: translateY(0);
   }
-}
-
-.yolo-chat-user-input-file-badge {
-  display: flex;
-  align-items: center;
-  background-color: var(--background-secondary);
-  border: 1px solid var(--background-modifier-border);
-  border-radius: var(--radius-s);
-  font-size: var(--font-smallest);
-  padding: var(--size-2-1) var(--size-4-1);
-  gap: var(--size-2-1);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: var(--yolo-mention-badge-max-width, 260px);
-  cursor: pointer;
-
-  &.yolo-chat-user-input-file-badge-focused {
-    border: 1px solid var(--interactive-accent);
-  }
-
-  svg {
-    flex-shrink: 0;
-  }
-}
-
-.yolo-chat-user-input-file-badge:hover {
-  background-color: var(--background-modifier-hover);
-}
-
-button.yolo-chat-user-input-file-badge-delete,
-.yolo-chat-user-input-file-badge-delete {
-  appearance: none !important;
-  -webkit-appearance: none !important;
-  background: transparent !important;
-  border: 0 !important;
-  box-shadow: none !important;
-  outline: none !important;
-  border-radius: 0 !important;
-  padding: 0 !important;
-  margin: 0 !important;
-  min-height: 0 !important;
-  min-width: 0 !important;
-  width: auto !important;
-  height: 100%;
-  display: flex;
-  align-items: center;
-  color: var(--text-muted);
-  cursor: pointer;
-}
-
-button.yolo-chat-user-input-file-badge-delete:hover,
-button.yolo-chat-user-input-file-badge-delete:focus,
-button.yolo-chat-user-input-file-badge-delete:focus-visible,
-.yolo-chat-user-input-file-badge-delete:hover,
-.yolo-chat-user-input-file-badge-delete:focus,
-.yolo-chat-user-input-file-badge-delete:focus-visible {
-  appearance: none !important;
-  -webkit-appearance: none !important;
-  background: transparent !important;
-  border: 0 !important;
-  box-shadow: none !important;
-  outline: none !important;
-}
-
-.yolo-chat-user-input-file-badge-expand {
-  height: 100%;
-  display: flex;
-  align-items: center;
-  color: var(--text-muted);
-  cursor: pointer;
-  padding: 0 var(--size-2-1);
-  border-radius: var(--radius-s);
-}
-
-.yolo-chat-user-input-file-badge-expand:hover {
-  color: var(--text-normal);
-  background-color: var(--background-modifier-hover);
-}
-
-.yolo-chat-user-input-file-badge-name {
-  display: flex;
-  flex-direction: row;
-  gap: var(--size-2-1);
-  flex-grow: 1;
-  overflow: hidden;
-  align-items: center;
-  min-width: 0;
-}
-
-.yolo-chat-user-input-file-badge-name-icon {
-  color: var(--text-muted);
-}
-
-.yolo-chat-user-input-file-badge-name span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.yolo-chat-user-input-file-badge-name-suffix {
-  color: var(--text-faint);
-  flex-grow: 0;
 }

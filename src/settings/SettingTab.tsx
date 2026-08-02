@@ -143,6 +143,7 @@ export class YoloSettingTab extends PluginSettingTab {
     const defaultSystemPrompt = getDefaultSystemPrompt(getUiLanguage())
     let promptSaveTimer: number | null = null
 
+    setting.settingEl.addClass('yolo-settings-prompt-setting')
     setting.addExtraButton((button) =>
       button
         .setIcon('reset')
@@ -157,7 +158,7 @@ export class YoloSettingTab extends PluginSettingTab {
         }),
     )
 
-    const promptArea = createEl('textarea', {
+    const promptArea = setting.controlEl.createEl('textarea', {
       cls: 'yolo-settings-prompt-textarea',
     })
     promptArea.value = this.plugin.settings.systemPrompt
@@ -172,11 +173,9 @@ export class YoloSettingTab extends PluginSettingTab {
         })
       }, 600)
     })
-    setting.settingEl.insertAdjacentElement('afterend', promptArea)
 
     return () => {
       if (promptSaveTimer) window.clearTimeout(promptSaveTimer)
-      promptArea.remove()
     }
   }
 }

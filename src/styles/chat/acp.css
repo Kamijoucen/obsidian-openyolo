@@ -707,14 +707,24 @@ button.yolo-chat-user-input-submit-button-circle.is-stop {
   margin-bottom: 6px;
 }
 
-/* 设置页提示词编辑框 */
+/* 设置页提示词编辑框：整行换行布局，编辑框占满控件区宽度 */
+
+.yolo-settings-prompt-setting {
+  flex-wrap: wrap;
+}
+
+.yolo-settings-prompt-setting .setting-item-control {
+  flex: 1 1 100%;
+  flex-wrap: wrap;
+  gap: var(--size-2-2);
+}
 
 .yolo-settings-prompt-textarea {
   display: block;
   width: 100%;
   box-sizing: border-box;
   min-height: 240px;
-  margin: 0 0 var(--size-4-3);
+  margin: 0;
   padding: var(--size-4-2) var(--size-4-3);
   font-family: var(--font-monospace);
   font-size: var(--font-ui-smaller);
