@@ -3,6 +3,9 @@ export const apiVersion = '1.8.0'
 export const Editor = jest.fn()
 export const MarkdownView = jest.fn()
 export const Platform = { isDesktop: true, isMobile: false }
+export class PluginSettingTab {
+  update = jest.fn(() => undefined)
+}
 export const TFile = jest.fn()
 export const TFolder = jest.fn()
 export const Vault = jest.fn()

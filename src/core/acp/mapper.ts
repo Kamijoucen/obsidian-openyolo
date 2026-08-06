@@ -94,6 +94,18 @@ export class SessionStateStore {
     this.emit()
   }
 
+  resetForReplay(sessionId: string, title = this.state.title) {
+    this.assistantEntryByMessageId.clear()
+    this.userEntryByMessageId.clear()
+    this.toolEntryByCallId.clear()
+    this.state = {
+      ...createInitialSessionState(title),
+      sessionId,
+      status: 'loading',
+    }
+    this.emit()
+  }
+
   setStatus(status: ChatSessionState['status'], error: string | null = null) {
     this.state = {
       ...this.state,
@@ -150,6 +162,21 @@ export class SessionStateStore {
       awaitingResponse: true,
       error: null,
     }
+    this.emit()
+  }
+
+  markPreparing() {
+    this.state = {
+      ...this.state,
+      status: 'preparing',
+      awaitingResponse: false,
+      error: null,
+    }
+    this.emit()
+  }
+
+  markCancelling() {
+    this.state = { ...this.state, status: 'cancelling' }
     this.emit()
   }
 

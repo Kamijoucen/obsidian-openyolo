@@ -9,6 +9,12 @@ import { KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { useLanguage } from '../../contexts/language-context'
 import type { SessionModeState } from '../../types/chat'
 
+import {
+  type SubmitResult,
+  buildComposerAttachments,
+  hasComposerContent,
+  settleComposerDraft,
+} from './composer'
 import { AttachedNote, NotePicker } from './NotePicker'
 import {
   ConfigOptionSelect,
@@ -34,7 +40,11 @@ type ChatInputProps = {
   configOptions: SessionConfigOption[]
   onModeChange: (modeId: string) => void
   onConfigOptionChange: (configId: string, value: string) => void
-  onSubmit: (text: string, images: InputImage[], notes: AttachedNote[]) => void
+  onSubmit: (
+    text: string,
+    images: InputImage[],
+    notes: AttachedNote[],
+  ) => Promise<SubmitResult>
   onCancel: () => void
 }
 
@@ -108,9 +118,11 @@ function ChatInput({
   const [excludedCurrentPath, setExcludedCurrentPath] = useState<string | null>(
     null,
   )
+  const [submitting, setSubmitting] = useState(false)
   const [commandIndex, setCommandIndex] = useState(0)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const submittingRef = useRef(false)
   const activeFile = useActiveFile()
 
   const currentNote =
@@ -130,6 +142,19 @@ function ChatInput({
     if (currentNote) paths.add(currentNote.path)
     return paths
   }, [notes, currentNote])
+
+  const attachedNotes = useMemo(
+    () =>
+      buildComposerAttachments(
+        currentNote
+          ? { path: currentNote.path, name: currentNote.basename }
+          : null,
+        notes.map((note) => ({ path: note.path, name: note.basename })),
+        externalFiles,
+      ),
+    [currentNote, notes, externalFiles],
+  )
+  const hasContent = hasComposerContent(text, images, attachedNotes)
 
   const toggleNote = (file: TFile) => {
     if (activeFile && file.path === activeFile.path) {
@@ -171,22 +196,35 @@ function ChatInput({
     })
   }, [text])
 
-  const doSubmit = () => {
+  const doSubmit = async () => {
     const trimmed = text.trim()
-    const attached: AttachedNote[] = [
-      ...(currentNote
-        ? [{ path: currentNote.path, name: currentNote.basename }]
-        : []),
-      ...notes.map((note) => ({ path: note.path, name: note.basename })),
-      ...externalFiles.map((file) => ({ ...file, absolute: true })),
-    ]
-    if ((!trimmed && images.length === 0 && attached.length === 0) || disabled)
+    if (
+      running ||
+      disabled ||
+      submittingRef.current ||
+      !hasComposerContent(trimmed, images, attachedNotes)
+    ) {
       return
-    onSubmit(trimmed, images, attached)
-    setText('')
-    setImages([])
-    setNotes([])
-    setExternalFiles([])
+    }
+
+    submittingRef.current = true
+    setSubmitting(true)
+    const draft = { text, images, notes, externalFiles }
+    try {
+      const result = await onSubmit(trimmed, images, attachedNotes)
+      const settled = settleComposerDraft(draft, result)
+      if (settled !== draft) {
+        setText((current) => (current === draft.text ? settled.text : current))
+        setImages((current) =>
+          current.filter((image) => !draft.images.includes(image)),
+        )
+      }
+    } catch {
+      // A rejected submission has failed; leave the draft intact for retry.
+    } finally {
+      submittingRef.current = false
+      setSubmitting(false)
+    }
   }
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -218,7 +256,7 @@ function ChatInput({
       !event.nativeEvent.isComposing
     ) {
       event.preventDefault()
-      doSubmit()
+      void doSubmit()
     }
   }
 
@@ -315,6 +353,7 @@ function ChatInput({
                   <button
                     type="button"
                     className="yolo-acp-note-chip__remove"
+                    disabled={disabled || submitting}
                     onClick={() => setExcludedCurrentPath(currentNote.path)}
                   >
                     <X size={12} />
@@ -334,6 +373,7 @@ function ChatInput({
                   <button
                     type="button"
                     className="yolo-acp-note-chip__remove"
+                    disabled={disabled || submitting}
                     onClick={() =>
                       setNotes((prev) =>
                         prev.filter((item) => item.path !== note.path),
@@ -357,6 +397,7 @@ function ChatInput({
                   <button
                     type="button"
                     className="yolo-acp-note-chip__remove"
+                    disabled={disabled || submitting}
                     onClick={() =>
                       setExternalFiles((prev) =>
                         prev.filter((item) => item.path !== file.path),
@@ -374,6 +415,7 @@ function ChatInput({
                   <img src={image.previewUrl} alt="" />
                   <button
                     className="yolo-acp-input-image-remove"
+                    disabled={disabled || submitting}
                     onClick={() =>
                       setImages((prev) => prev.filter((_, i) => i !== index))
                     }
@@ -391,7 +433,7 @@ function ChatInput({
               placeholder={t('chat.inputPlaceholder', 'Ask anything…')}
               value={text}
               rows={1}
-              disabled={disabled}
+              disabled={disabled || submitting}
               onChange={(event) => setText(event.target.value)}
               onKeyDown={handleKeyDown}
               onPaste={handlePaste}
@@ -400,7 +442,7 @@ function ChatInput({
           <div className="yolo-chat-user-input-send-row">
             <NotePicker
               selected={selectedNotePaths}
-              disabled={disabled}
+              disabled={disabled || submitting}
               onToggle={toggleNote}
               onPickFile={() => fileInputRef.current?.click()}
             />
@@ -409,6 +451,7 @@ function ChatInput({
               type="file"
               accept={FILE_INPUT_ACCEPT}
               multiple
+              disabled={disabled || submitting}
               style={{ display: 'none' }}
               onChange={(event) => {
                 handleFiles(event.target.files)
@@ -430,8 +473,8 @@ function ChatInput({
                   type="button"
                   className="yolo-chat-user-input-submit-button-circle"
                   title={t('common.send', 'Send')}
-                  onClick={doSubmit}
-                  disabled={disabled || (!text.trim() && images.length === 0)}
+                  onClick={() => void doSubmit()}
+                  disabled={running || disabled || submitting || !hasContent}
                 >
                   <ArrowUp size={14} />
                 </button>

@@ -20,6 +20,8 @@ export default class YoloPlugin extends Plugin {
   private settingsListeners = new Set<(settings: YoloSettings) => void>()
   private statusBarItem: HTMLElement | null = null
   private agentsMdSyncTimer: number | null = null
+  private settingTab: YoloSettingTab | null = null
+  private unsubscribeActivityChange: (() => void) | null = null
 
   async onload() {
     await Promise.all([loadLocale('en'), loadLocale('zh')])
@@ -66,16 +68,32 @@ export default class YoloPlugin extends Plugin {
       },
     })
 
-    this.addSettingTab(new YoloSettingTab(this.app, this))
+    this.settingTab = new YoloSettingTab(this.app, this)
+    this.addSettingTab(this.settingTab)
 
     this.statusBarItem = this.addStatusBarItem()
-    this.sessionService.onActivityChange(() => this.updateStatusBar())
+    this.unsubscribeActivityChange = this.sessionService.onActivityChange(() =>
+      this.updateStatusBar(),
+    )
     this.updateStatusBar()
   }
 
   onunload() {
-    void this.sessionService?.dispose()
+    this.settingTab?.dispose()
+    this.unsubscribeActivityChange?.()
+
+    if (this.agentsMdSyncTimer !== null) {
+      window.clearTimeout(this.agentsMdSyncTimer)
+      this.agentsMdSyncTimer = null
+    }
+
+    const service = this.sessionService
+    void service?.dispose()
+
+    this.settingTab = null
+    this.unsubscribeActivityChange = null
     this.sessionService = null
+    this.statusBarItem = null
   }
 
   private updateStatusBar() {
@@ -136,7 +154,7 @@ export default class YoloPlugin extends Plugin {
   }
 
   private scheduleAgentsMdSync() {
-    if (this.agentsMdSyncTimer) {
+    if (this.agentsMdSyncTimer !== null) {
       window.clearTimeout(this.agentsMdSyncTimer)
     }
     this.agentsMdSyncTimer = window.setTimeout(() => {

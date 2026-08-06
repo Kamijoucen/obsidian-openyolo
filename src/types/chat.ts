@@ -57,7 +57,8 @@ export type ChatToolEntry = {
 
 export type TimelineEntry = ChatUserEntry | ChatAssistantEntry | ChatToolEntry
 
-export type SessionStatus = 'idle' | 'loading' | 'running' | 'error'
+export type SessionStatus =
+  'idle' | 'loading' | 'preparing' | 'running' | 'cancelling' | 'error'
 
 export type SessionModeState = {
   current: string

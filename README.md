@@ -9,7 +9,7 @@ OpenYOLO is an AI note assistant plugin for Obsidian (desktop only). The plugin 
 - **Chat**: streaming output, collapsible reasoning, tool-call cards (read/write/edit/terminal/search, with diff preview for edits), plan panel
 - **Context awareness**: automatically attaches the currently open note; attach multiple vault notes via the attachment panel, or add external text files / images (paste supported)
 - **Permission approvals**: tool permission requests shown as cards (allow once / always allow / reject); optional YOLO mode auto-approves everything
-- **Mode switching**: plan (read-only) / build (writable), mapped to opencode session modes
+- **Mode switching**: plan (a restricted planning mode where file editing and command execution depend on your opencode permission configuration) / build, mapped to opencode session modes
 - **Model & effort selection**: searchable list of all models configured in opencode; selections are persisted and restored across restarts (falls back to the first model if the saved one disappears)
 - **Slash commands**: type `/` to invoke opencode commands / skills
 - **History**: automatically restores the most recent session; browse all persisted sessions
@@ -24,7 +24,7 @@ Obsidian plugin (ACP client)  ──stdio / JSON-RPC──▶  opencode acp (sub
 - Spawns `opencode acp` as a subprocess and communicates via the official `@agentclientprotocol/sdk`
 - Sessions are persisted by opencode; the plugin replays history via `session/list` + `session/load`
 - Attachments are sent as ACP `resource_link` blocks and read natively by opencode
-- File access (`fs/read_text_file` / `fs/write_text_file`) is implemented through the vault adapter, strictly confined to the vault root
+- File access (`fs/read_text_file` / `fs/write_text_file`) is implemented through the vault adapter and rejects paths that are not lexically inside the vault root. This is a path boundary, not a sandbox: opencode runs as a trusted local subprocess, and symlinks inside the vault may resolve outside it.
 - Permission requests (`session/request_permission`) are routed to in-plugin approval cards
 - The UI is a React-rendered ItemView; `session/update` notifications are mapped to immutable state for streaming rendering
 

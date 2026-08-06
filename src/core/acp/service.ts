@@ -1,11 +1,13 @@
 import type {
-  ClientContext,
+  AgentCapabilities,
   ContentBlock,
   Implementation,
   ListSessionsResponse,
   LoadSessionResponse,
   NewSessionResponse,
   PromptResponse,
+  ResumeSessionResponse,
+  SendRequestOptions,
   SessionConfigOption,
   SessionMode,
   SessionNotification,
@@ -16,10 +18,17 @@ import type { App } from 'obsidian'
 import type { YoloSettings } from '../../settings/schema/setting.types'
 import type { ChatSessionState, HistorySessionInfo } from '../../types/chat'
 
-import { AcpClient, OpencodeNotFoundError } from './client'
+import { AcpClient, AcpTimeoutError, OpencodeNotFoundError } from './client'
+import type {
+  AcpClientFactory,
+  AcpClientPort,
+  AcpDisconnectReason,
+} from './client'
 import { FsBridge } from './fsBridge'
 import { SessionStateStore } from './mapper'
 import { PermissionManager } from './permissions'
+import { cancelTimeout, scheduleTimeout } from './timers'
+import type { TimerHandle } from './timers'
 
 export type ChatTabInfo = {
   tabId: string
@@ -27,6 +36,11 @@ export type ChatTabInfo = {
 }
 
 export type AvailabilityState = 'unknown' | 'starting' | 'ready' | 'unavailable'
+
+export type SubmitResult = 'accepted' | 'busy' | 'failed'
+
+const CONTROL_REQUEST_TIMEOUT_MS = 60_000
+const CANCEL_GRACE_MS = 15_000
 
 let tabSeq = 0
 function nextTabId(): string {
@@ -39,7 +53,48 @@ type TabRecord = {
   store: SessionStateStore
   sessionId: string | null
   desiredMode: string | null
+  sessionPromise: Promise<string> | null
+  attachedGeneration: number | null
+  activeTurn: TurnRecord | null
+  loadController: AbortController | null
+  loadGeneration: number | null
   closed: boolean
+}
+
+type TurnRecord = {
+  id: number
+  phase: 'preparing' | 'running' | 'cancelling'
+  cancelRequested: boolean
+  cancelTimer: TimerHandle | null
+  connectionGeneration: number | null
+  promptStarted: boolean
+  settled: Promise<void>
+  resolveSettled: () => void
+}
+
+type SessionSetupResponse = Pick<NewSessionResponse, 'configOptions' | 'modes'>
+
+let turnSeq = 0
+function nextTurnId(): number {
+  turnSeq += 1
+  return turnSeq
+}
+
+function createTurn(): TurnRecord {
+  let resolveSettled: () => void = () => undefined
+  const settled = new Promise<void>((resolve) => {
+    resolveSettled = resolve
+  })
+  return {
+    id: nextTurnId(),
+    phase: 'preparing',
+    cancelRequested: false,
+    cancelTimer: null,
+    connectionGeneration: null,
+    promptStarted: false,
+    settled,
+    resolveSettled,
+  }
 }
 
 function isAuthError(error: unknown): boolean {
@@ -102,12 +157,22 @@ function flatSelectValues(option: SessionConfigOption): string[] {
 }
 
 export class AcpSessionService {
-  private client: AcpClient | null = null
+  private client: AcpClientPort | null = null
+  private startingClient: AcpClientPort | null = null
   private startPromise: Promise<void> | null = null
+  private connectionGeneration = 0
+  private activeGeneration = 0
+  private disposed = false
+  private disposePromise: Promise<void> | null = null
+  private clientTeardown: Promise<void> = Promise.resolve()
   private availability: AvailabilityState = 'unknown'
   private startError: string | null = null
   private tabs = new Map<string, TabRecord>()
   private tabBySession = new Map<string, string>()
+  private openingBySession = new Map<string, Promise<string>>()
+  private closingBySession = new Map<string, Promise<void>>()
+  private remoteCloseBySession = new Map<string, Promise<void>>()
+  private closingTurns = new Set<TurnRecord>()
   private permissionManager: PermissionManager
   private availabilityListeners = new Set<(state: AvailabilityState) => void>()
   private tabsListeners = new Set<() => void>()
@@ -122,6 +187,8 @@ export class AcpSessionService {
       configId: string,
       value: string,
     ) => void = () => undefined,
+    private readonly createClient: AcpClientFactory = (options) =>
+      new AcpClient(options),
   ) {
     this.permissionManager = new PermissionManager(
       () => this.getSettings().autoApprovePermissions,
@@ -152,6 +219,10 @@ export class AcpSessionService {
     return this.client?.agentInfo ?? null
   }
 
+  getAgentCapabilities(): AgentCapabilities {
+    return this.client?.agentCapabilities ?? {}
+  }
+
   onAvailabilityChange(
     listener: (state: AvailabilityState) => void,
   ): () => void {
@@ -165,12 +236,14 @@ export class AcpSessionService {
     state: AvailabilityState,
     error: string | null = null,
   ) {
+    if (this.disposed) return
     this.availability = state
     this.startError = error
     for (const listener of this.availabilityListeners) listener(state)
   }
 
   async ensureStarted(): Promise<void> {
+    if (this.disposed) throw new Error('ACP session service is disposed')
     if (this.client?.isConnected) {
       this.setAvailability('ready')
       return
@@ -181,38 +254,70 @@ export class AcpSessionService {
     try {
       await promise
     } finally {
-      this.startPromise = null
+      if (this.startPromise === promise) this.startPromise = null
     }
   }
 
   private async start(): Promise<void> {
     this.setAvailability('starting')
+    await this.clientTeardown
+    if (this.disposed) {
+      throw new Error('ACP session service was disposed while starting')
+    }
+    const staleClient = this.client
+    if (staleClient && !staleClient.isConnected) {
+      this.client = null
+      this.activeGeneration = 0
+      this.connectionGeneration += 1
+      await this.trackClientDisposal(
+        staleClient,
+        new Error('Replacing closed ACP connection'),
+      )
+      if (this.disposed) {
+        throw new Error('ACP session service was disposed while starting')
+      }
+    }
     const settings = this.getSettings()
-    const client = new AcpClient({
+    const generation = ++this.connectionGeneration
+    const client = this.createClient({
       configuredPath: settings.opencodePath,
       extraArgs: settings.opencodeArgs,
       cwd: this.vaultCwd(),
       clientName: 'openyolo',
       clientVersion: this.clientVersion,
     })
+    this.startingClient = client
     const fsBridge = new FsBridge(this.app)
     try {
       await client.connect({
         fsBridge,
         permissionManager: this.permissionManager,
-        onSessionUpdate: (notification) =>
-          this.handleSessionUpdate(notification),
+        isSessionActive: (sessionId) =>
+          this.isCurrentClient(client, generation) &&
+          this.tabBySession.has(sessionId),
+        canRequestPermission: (params) => {
+          if (!this.isCurrentClient(client, generation)) return false
+          const tabId = this.tabBySession.get(params.sessionId)
+          const turn = tabId ? this.tabs.get(tabId)?.activeTurn : null
+          return turn != null && !turn.cancelRequested
+        },
+        onSessionUpdate: (notification) => {
+          if (!this.isCurrentClient(client, generation)) return
+          this.handleSessionUpdate(notification)
+        },
         onPermissionPending: (params) => {
+          if (!this.isCurrentClient(client, generation)) return
           this.debug('session/request_permission', params)
           const tabId = this.tabBySession.get(params.sessionId)
           const tab = tabId ? this.tabs.get(tabId) : null
           tab?.store.setPendingPermission(params.toolCall, params.options)
         },
-        onPermissionSettled: (toolCallId) => {
-          this.debug('permission settled', { toolCallId })
-          for (const tab of this.tabs.values()) {
-            tab.store.clearPendingPermission(toolCallId)
-          }
+        onPermissionSettled: (sessionId, toolCallId) => {
+          if (!this.isCurrentClient(client, generation)) return
+          this.debug('permission settled', { sessionId, toolCallId })
+          const tabId = this.tabBySession.get(sessionId)
+          if (tabId)
+            this.tabs.get(tabId)?.store.clearPendingPermission(toolCallId)
         },
         onStderr: (line) => {
           this.debug('stderr', line)
@@ -220,32 +325,114 @@ export class AcpSessionService {
         onDebug: (event, payload) => {
           this.debug(event, payload)
         },
-        onProcessExit: (code, signal) => {
-          this.handleProcessExit(code, signal)
+        onDisconnected: (reason) => {
+          this.handleDisconnected(client, generation, reason)
         },
       })
+      if (this.disposed || this.connectionGeneration !== generation) {
+        throw new Error('ACP session service was disposed while starting')
+      }
+      if (!client.isConnected) {
+        throw new Error('ACP connection closed while starting')
+      }
     } catch (error) {
-      this.client = null
-      if (error instanceof OpencodeNotFoundError) {
-        this.setAvailability('unavailable', 'opencode-not-found')
-      } else {
-        this.setAvailability('unavailable', errorMessage(error))
+      await this.trackClientDisposal(client, error)
+      if (this.startingClient === client) this.startingClient = null
+      if (!this.disposed && this.connectionGeneration === generation) {
+        if (error instanceof OpencodeNotFoundError) {
+          this.setAvailability('unavailable', 'opencode-not-found')
+        } else {
+          this.setAvailability('unavailable', errorMessage(error))
+        }
       }
       throw error
     }
+    this.startingClient = null
     this.client = client
+    this.activeGeneration = generation
     this.setAvailability('ready')
   }
 
-  private handleProcessExit(code: number | null, signal: string | null) {
+  private isCurrentClient(client: AcpClientPort, generation: number): boolean {
+    return (
+      !this.disposed &&
+      this.connectionGeneration === generation &&
+      (this.client === client || this.startingClient === client)
+    )
+  }
+
+  private trackClientDisposal(
+    client: AcpClientPort,
+    reason?: unknown,
+  ): Promise<void> {
+    const previousTeardown = this.clientTeardown
+    let releaseTeardown: () => void = () => undefined
+    const teardownGate = new Promise<void>((resolve) => {
+      releaseTeardown = resolve
+    })
+    this.clientTeardown = Promise.all([previousTeardown, teardownGate]).then(
+      () => undefined,
+    )
+
+    let disposal: Promise<void>
+    try {
+      disposal = client.dispose(reason)
+    } catch {
+      disposal = Promise.resolve()
+    }
+    const settled = disposal.catch(() => undefined)
+    void settled.then(releaseTeardown)
+    return settled
+  }
+
+  private handleDisconnected(
+    client: AcpClientPort,
+    generation: number,
+    disconnect: AcpDisconnectReason,
+  ) {
+    if (
+      this.disposed ||
+      this.client !== client ||
+      this.activeGeneration !== generation ||
+      this.connectionGeneration !== generation
+    ) {
+      return
+    }
+    const reason =
+      disconnect.kind === 'process-exit'
+        ? `opencode exited (code=${disconnect.code ?? 'null'} signal=${
+            disconnect.signal ?? 'null'
+          })`
+        : errorMessage(disconnect.error)
+    void this.trackClientDisposal(client, disconnect)
+    this.permissionManager.cancelAll()
     this.client = null
-    const reason = `opencode exited (code=${code ?? 'null'} signal=${
-      signal ?? 'null'
-    })`
+    this.activeGeneration = 0
+    this.connectionGeneration += 1
     for (const tab of this.tabs.values()) {
-      if (tab.store.getState().status === 'running') {
-        tab.store.markTurnEnd(null)
+      tab.attachedGeneration = null
+      tab.sessionPromise = null
+      const turn = tab.activeTurn
+      const preserveUnboundTurn = turn?.connectionGeneration === null
+      if (turn && !preserveUnboundTurn) {
+        this.clearTurnTimer(turn)
+        tab.activeTurn = null
+        turn.resolveSettled()
       }
+      if (
+        !preserveUnboundTurn &&
+        ['loading', 'preparing', 'running', 'cancelling'].includes(
+          tab.store.getState().status,
+        )
+      ) {
+        tab.store.markTurnEnd(null)
+        tab.store.setStatus('error', reason)
+      }
+    }
+    for (const turn of this.closingTurns) {
+      if (turn.connectionGeneration !== generation) continue
+      this.clearTurnTimer(turn)
+      turn.resolveSettled()
     }
     this.setAvailability('unavailable', reason)
     this.emitActivity()
@@ -289,7 +476,13 @@ export class AcpSessionService {
   getRunningCount(): number {
     let count = 0
     for (const tab of this.tabs.values()) {
-      if (tab.store.getState().status === 'running') count += 1
+      if (
+        ['preparing', 'running', 'cancelling'].includes(
+          tab.store.getState().status,
+        )
+      ) {
+        count += 1
+      }
     }
     return count
   }
@@ -333,6 +526,11 @@ export class AcpSessionService {
       store,
       sessionId: null,
       desiredMode: this.getSettings().defaultMode,
+      sessionPromise: null,
+      attachedGeneration: null,
+      activeTurn: null,
+      loadController: null,
+      loadGeneration: null,
       closed: false,
     }
     this.tabs.set(tabId, tab)
@@ -363,7 +561,35 @@ export class AcpSessionService {
   }
 
   async openHistoryTab(sessionId: string, title: string): Promise<string> {
+    const closing = this.closingBySession.get(sessionId)
+    if (closing) await closing
+    const existing = this.tabBySession.get(sessionId)
+    if (existing && this.tabs.has(existing)) return existing
+    const opening = this.openingBySession.get(sessionId)
+    if (opening) return opening
+
+    const promise = this.loadHistoryTab(sessionId, title)
+    this.openingBySession.set(sessionId, promise)
+    try {
+      return await promise
+    } finally {
+      if (this.openingBySession.get(sessionId) === promise) {
+        this.openingBySession.delete(sessionId)
+      }
+    }
+  }
+
+  private async loadHistoryTab(
+    sessionId: string,
+    title: string,
+  ): Promise<string> {
     await this.ensureStarted()
+    const generation = this.activeGeneration
+    if (!this.supportsSessionListLoad('load')) {
+      throw new Error('ACP agent does not support session/load')
+    }
+    const existing = this.tabBySession.get(sessionId)
+    if (existing && this.tabs.has(existing)) return existing
     const tabId = nextTabId()
     const store = new SessionStateStore(title)
     const tab: TabRecord = {
@@ -371,6 +597,11 @@ export class AcpSessionService {
       store,
       sessionId,
       desiredMode: null,
+      sessionPromise: null,
+      attachedGeneration: null,
+      activeTurn: null,
+      loadController: null,
+      loadGeneration: null,
       closed: false,
     }
     this.tabs.set(tabId, tab)
@@ -378,56 +609,144 @@ export class AcpSessionService {
     store.setSessionId(sessionId)
     store.setStatus('loading')
     this.emitTabsChange()
+    const loadController = new AbortController()
+    tab.loadController = loadController
+    tab.loadGeneration = generation
     try {
-      const response = await this.request<LoadSessionResponse>('session/load', {
-        sessionId,
-        cwd: this.vaultCwd(),
-        mcpServers: [],
-      })
-      const modes = modesFromConfigOptions(response.configOptions)
-      if (modes) {
-        store.applyModes(modes.current, modes.available)
+      const response = await this.request<LoadSessionResponse>(
+        'session/load',
+        {
+          sessionId,
+          cwd: this.vaultCwd(),
+          mcpServers: [],
+        },
+        { generation, signal: loadController.signal },
+      )
+      this.assertActiveGeneration(generation)
+      if (tab.closed || this.tabBySession.get(sessionId) !== tabId) {
+        throw new Error('Tab was closed while loading the session')
       }
-      if (response.configOptions) {
-        this.setLastConfigOptions(response.configOptions)
-        store.applyConfigOptions(response.configOptions)
-        await this.applyConfigSelections(tab, sessionId, response.configOptions)
-      }
+      await this.applySessionSetup(tab, sessionId, response, generation)
+      this.assertActiveGeneration(generation)
+      tab.attachedGeneration = generation
       store.markTurnEnd(null)
     } catch (error) {
-      store.setStatus('error', this.friendlyError(error))
+      if (tab.closed || this.tabs.get(tabId) !== tab) throw error
+      if (generation === this.activeGeneration) {
+        store.setStatus('error', this.friendlyError(error))
+      }
+    } finally {
+      if (tab.loadController === loadController) {
+        tab.loadController = null
+        tab.loadGeneration = null
+      }
     }
     this.emitActivity()
+    if (tab.closed || this.tabs.get(tabId) !== tab) {
+      throw new Error('Tab was closed while loading the session')
+    }
     return tabId
   }
 
   async closeTab(tabId: string): Promise<void> {
     const tab = this.tabs.get(tabId)
     if (!tab) return
+    const turn = tab.activeTurn
+    const cancellation = turn ? this.cancel(tabId) : Promise.resolve()
     tab.closed = true
     const sessionId = tab.sessionId
+    const opening = sessionId
+      ? (this.openingBySession.get(sessionId) ?? null)
+      : null
+    const loadGeneration = tab.loadGeneration
+    tab.loadController?.abort(new Error('Tab closed while loading'))
+    if (
+      sessionId &&
+      opening &&
+      this.openingBySession.get(sessionId) === opening
+    ) {
+      this.openingBySession.delete(sessionId)
+    }
     this.tabs.delete(tabId)
-    if (sessionId) {
+    if (turn?.promptStarted) this.trackClosingTurn(turn)
+    else if (turn) this.finishClosedTurn(tab, turn)
+
+    let closing: Promise<void> | null = null
+    let closingSessionId: string | null = null
+    if (sessionId && this.tabBySession.get(sessionId) === tabId) {
+      closingSessionId = sessionId
       this.tabBySession.delete(sessionId)
       this.permissionManager.cancelSession(sessionId)
-      if (this.client?.isConnected) {
-        void this.request('session/close', { sessionId }).catch(() => undefined)
-      }
+      const remoteClose = (async () => {
+        if (opening) {
+          await this.containHistoryLoad(opening, loadGeneration)
+        }
+        await this.closeRemoteSession(sessionId)
+      })()
+      closing = Promise.allSettled([
+        remoteClose,
+        turn?.settled ?? Promise.resolve(),
+      ]).then(() => undefined)
+      this.closingBySession.set(sessionId, closing)
     }
     this.emitTabsChange()
     this.emitActivity()
+    void cancellation
+    if (closing && closingSessionId) {
+      await closing
+      if (this.closingBySession.get(closingSessionId) === closing) {
+        this.closingBySession.delete(closingSessionId)
+      }
+    }
+  }
+
+  private async containHistoryLoad(
+    opening: Promise<string>,
+    generation: number | null,
+  ): Promise<void> {
+    let timer: TimerHandle | null = null
+    await Promise.race([
+      opening.then(
+        () => undefined,
+        () => undefined,
+      ),
+      new Promise<void>((resolve) => {
+        timer = scheduleTimeout(() => {
+          const client = this.client
+          if (
+            client &&
+            generation !== null &&
+            generation === this.activeGeneration
+          ) {
+            this.handleDisconnected(client, generation, {
+              kind: 'connection-closed',
+              error: new AcpTimeoutError('ACP history load cancellation'),
+            })
+          }
+          resolve()
+        }, CANCEL_GRACE_MS)
+      }),
+    ])
+    if (timer !== null) cancelTimeout(timer)
   }
 
   async listHistory(): Promise<HistorySessionInfo[]> {
     await this.ensureStarted()
+    const generation = this.activeGeneration
+    if (!this.supportsSessionListLoad('list')) return []
     const sessions: HistorySessionInfo[] = []
+    const seenCursors = new Set<string>()
     let cursor: string | null | undefined = null
     do {
       const response: ListSessionsResponse =
-        await this.request<ListSessionsResponse>('session/list', {
-          cwd: this.vaultCwd(),
-          cursor,
-        })
+        await this.request<ListSessionsResponse>(
+          'session/list',
+          {
+            cwd: this.vaultCwd(),
+            cursor,
+          },
+          { generation },
+        )
       for (const item of response.sessions) {
         // Sessions that never received a prompt are empty; hide them so
         // eagerly created sessions don't clutter the history list.
@@ -438,7 +757,12 @@ export class AcpSessionService {
           updatedAt: item.updatedAt ?? null,
         })
       }
-      cursor = response.nextCursor ?? null
+      const nextCursor = response.nextCursor ?? null
+      if (nextCursor && seenCursors.has(nextCursor)) {
+        throw new Error('ACP session/list returned a repeated cursor')
+      }
+      if (nextCursor) seenCursors.add(nextCursor)
+      cursor = nextCursor
     } while (cursor)
     sessions.sort((a, b) =>
       (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''),
@@ -447,15 +771,131 @@ export class AcpSessionService {
   }
 
   private async ensureSession(tab: TabRecord): Promise<string> {
-    if (tab.sessionId) return tab.sessionId
     if (tab.closed) throw new Error('Tab is closed')
-    const response = await this.request<NewSessionResponse>('session/new', {
-      cwd: this.vaultCwd(),
-      mcpServers: [],
-    })
+    if (tab.sessionPromise) return tab.sessionPromise
+    if (
+      tab.sessionId &&
+      tab.attachedGeneration !== null &&
+      tab.attachedGeneration === this.activeGeneration
+    ) {
+      return tab.sessionId
+    }
+    const promise = this.attachOrCreateSession(tab)
+    tab.sessionPromise = promise
+    try {
+      return await promise
+    } finally {
+      if (tab.sessionPromise === promise) tab.sessionPromise = null
+    }
+  }
+
+  private async attachOrCreateSession(tab: TabRecord): Promise<string> {
+    await this.ensureStarted()
+    if (tab.closed) throw new Error('Tab is closed')
+    const generation = this.activeGeneration
+
+    if (tab.sessionId) {
+      const sessionId = tab.sessionId
+      let response: ResumeSessionResponse | LoadSessionResponse
+      if (this.supportsSessionCapability('resume')) {
+        response = await this.request<ResumeSessionResponse>(
+          'session/resume',
+          {
+            sessionId,
+            cwd: this.vaultCwd(),
+            mcpServers: [],
+          },
+          { generation },
+        )
+      } else if (this.supportsSessionListLoad('load')) {
+        tab.store.resetForReplay(sessionId)
+        response = await this.request<LoadSessionResponse>(
+          'session/load',
+          {
+            sessionId,
+            cwd: this.vaultCwd(),
+            mcpServers: [],
+          },
+          { generation },
+        )
+      } else {
+        throw new Error('ACP agent cannot resume this session')
+      }
+      this.assertActiveGeneration(generation)
+      if (tab.closed) {
+        if (!this.tabBySession.has(sessionId)) {
+          await this.closeRemoteSession(sessionId)
+        }
+        throw new Error('Tab was closed while resuming the session')
+      }
+      await this.applySessionSetup(tab, sessionId, response, generation)
+      this.assertActiveGeneration(generation)
+      tab.attachedGeneration = generation
+      if (tab.store.getState().status === 'loading') {
+        if (tab.activeTurn) tab.store.markPreparing()
+        else tab.store.markTurnEnd(null)
+      }
+      return sessionId
+    }
+
+    const response = await this.request<NewSessionResponse>(
+      'session/new',
+      {
+        cwd: this.vaultCwd(),
+        mcpServers: [],
+      },
+      { generation },
+    )
+    this.assertActiveGeneration(generation)
+    if (tab.closed) {
+      if (!this.tabBySession.has(response.sessionId)) {
+        await this.closeRemoteSession(response.sessionId)
+      }
+      throw new Error('Tab was closed while creating the session')
+    }
+    const existingOwner = this.tabBySession.get(response.sessionId)
+    if (existingOwner && existingOwner !== tab.tabId) {
+      throw new Error(`ACP session is already open: ${response.sessionId}`)
+    }
     tab.sessionId = response.sessionId
     this.tabBySession.set(response.sessionId, tab.tabId)
     tab.store.setSessionId(response.sessionId)
+    await this.applySessionSetup(tab, response.sessionId, response, generation)
+    this.assertActiveGeneration(generation)
+    tab.attachedGeneration = generation
+
+    const desired = tab.desiredMode
+    const modes = modesFromConfigOptions(response.configOptions)
+    if (desired) {
+      const available = modes?.available ?? response.modes?.availableModes ?? []
+      const current = modes?.current ?? response.modes?.currentModeId
+      if (
+        available.some((mode) => mode.id === desired) &&
+        current !== desired
+      ) {
+        await this.request(
+          'session/set_mode',
+          {
+            sessionId: response.sessionId,
+            modeId: desired,
+          },
+          { generation },
+        )
+        tab.store.setModeCurrent(desired)
+      }
+    }
+    this.assertActiveGeneration(generation)
+    this.emitTabsChange()
+    return response.sessionId
+  }
+
+  private async applySessionSetup(
+    tab: TabRecord,
+    sessionId: string,
+    response: SessionSetupResponse,
+    generation: number,
+  ): Promise<void> {
+    this.assertActiveGeneration(generation)
     const modes =
       modesFromConfigOptions(response.configOptions) ??
       (response.modes
@@ -470,33 +910,58 @@ export class AcpSessionService {
     if (response.configOptions) {
       this.setLastConfigOptions(response.configOptions)
       tab.store.applyConfigOptions(response.configOptions)
+      await this.applyConfigSelections(
+        tab,
+        sessionId,
+        response.configOptions,
+        generation,
+      )
     }
-    await this.applyConfigSelections(
-      tab,
-      response.sessionId,
-      response.configOptions ?? [],
-    )
-    const desired = tab.desiredMode
-    if (desired) {
-      const available = modes?.available ?? []
-      if (
-        available.some((mode) => mode.id === desired) &&
-        modes?.current !== desired
-      ) {
-        await this.request('session/set_mode', {
-          sessionId: response.sessionId,
-          modeId: desired,
-        }).catch(() => undefined)
-        tab.store.setModeCurrent(desired)
-      }
-    }
-    this.emitTabsChange()
-    return response.sessionId
+    this.assertActiveGeneration(generation)
   }
 
-  private agent(): ClientContext {
-    if (!this.client) throw new Error('ACP client is not connected')
-    return this.client.agent()
+  private assertActiveGeneration(generation: number) {
+    if (
+      this.disposed ||
+      generation === 0 ||
+      generation !== this.activeGeneration ||
+      !this.client?.isConnected
+    ) {
+      throw new Error('ACP connection changed during the operation')
+    }
+  }
+
+  private supportsSessionCapability(capability: 'close' | 'resume'): boolean {
+    return (
+      this.client?.agentCapabilities.sessionCapabilities?.[capability] != null
+    )
+  }
+
+  private supportsSessionListLoad(capability: 'list' | 'load'): boolean {
+    if (capability === 'load') {
+      return this.client?.agentCapabilities.loadSession === true
+    }
+    return this.client?.agentCapabilities.sessionCapabilities?.list != null
+  }
+
+  private async closeRemoteSession(sessionId: string): Promise<void> {
+    if (!this.client?.isConnected || !this.supportsSessionCapability('close')) {
+      return
+    }
+    const existing = this.remoteCloseBySession.get(sessionId)
+    if (existing) return existing
+    const closing = this.request('session/close', { sessionId }).then(
+      () => undefined,
+      () => undefined,
+    )
+    this.remoteCloseBySession.set(sessionId, closing)
+    try {
+      await closing
+    } finally {
+      if (this.remoteCloseBySession.get(sessionId) === closing) {
+        this.remoteCloseBySession.delete(sessionId)
+      }
+    }
   }
 
   private debug(event: string, payload?: unknown) {
@@ -504,21 +969,81 @@ export class AcpSessionService {
     console.debug('[openyolo]', event, payload ?? '')
   }
 
-  private async request<T>(method: string, params?: unknown): Promise<T> {
+  private async request<T>(
+    method: string,
+    params?: unknown,
+    options: {
+      timeoutMs?: number | null
+      generation?: number
+      signal?: AbortSignal
+    } = {},
+  ): Promise<T> {
     this.debug(`→ ${method}`, params)
+    const client = this.client
+    const generation = options.generation ?? this.activeGeneration
+    if (!client || generation === 0) {
+      throw new Error('ACP client is not connected')
+    }
+    this.assertActiveGeneration(generation)
+    const timeoutMs = options.timeoutMs ?? CONTROL_REQUEST_TIMEOUT_MS
+    const controller =
+      timeoutMs === null && !options.signal ? null : new AbortController()
+    const abortFromCaller = () => {
+      controller?.abort(options.signal?.reason)
+    }
+    if (options.signal) {
+      if (options.signal.aborted) abortFromCaller()
+      else
+        options.signal.addEventListener('abort', abortFromCaller, {
+          once: true,
+        })
+    }
+    let timer: TimerHandle | null = null
     try {
-      const response = await this.agent().request<T>(method, params)
+      const requestOptions: SendRequestOptions | undefined = controller
+        ? { cancellationSignal: controller.signal }
+        : undefined
+      const pending = client.agent().request<T>(method, params, requestOptions)
+      const response =
+        timeoutMs === null
+          ? await pending
+          : await Promise.race([
+              pending,
+              new Promise<never>((_, reject) => {
+                timer = scheduleTimeout(() => {
+                  const error = new AcpTimeoutError(`ACP ${method}`)
+                  controller?.abort(error)
+                  this.handleDisconnected(client, generation, {
+                    kind: 'connection-closed',
+                    error,
+                  })
+                  reject(error)
+                }, timeoutMs)
+              }),
+            ])
+      this.assertActiveGeneration(generation)
       this.debug(`← ${method}`, response)
       return response
     } catch (error) {
       this.debug(`✕ ${method}`, errorMessage(error))
       throw error
+    } finally {
+      if (timer !== null) cancelTimeout(timer)
+      options.signal?.removeEventListener('abort', abortFromCaller)
     }
   }
 
-  private async notify(method: string, params?: unknown): Promise<void> {
+  private async notify(
+    method: string,
+    params?: unknown,
+    generation = this.activeGeneration,
+  ): Promise<void> {
     this.debug(`→ ${method}`, params)
-    await this.agent().notify(method, params)
+    this.assertActiveGeneration(generation)
+    const client = this.client
+    if (!client) throw new Error('ACP client is not connected')
+    await client.agent().notify(method, params)
+    this.assertActiveGeneration(generation)
   }
 
   /**
@@ -553,6 +1078,7 @@ export class AcpSessionService {
     tab: TabRecord,
     sessionId: string,
     options: SessionConfigOption[],
+    generation = this.activeGeneration,
   ) {
     let currentOptions = options
     const apply = async (selection: { configId: string; value: string }) => {
@@ -563,7 +1089,11 @@ export class AcpSessionService {
           configId: selection.configId,
           value: selection.value,
         },
-      ).catch(() => null)
+        { generation },
+      ).catch(() => {
+        this.assertActiveGeneration(generation)
+        return null
+      })
       if (res?.configOptions) {
         currentOptions = res.configOptions
         this.setLastConfigOptions(res.configOptions)
@@ -596,34 +1126,209 @@ export class AcpSessionService {
     tabId: string,
     text: string,
     blocks: ContentBlock[],
-  ): Promise<void> {
+  ): Promise<SubmitResult> {
     const tab = this.tabs.get(tabId)
-    if (!tab || tab.closed) return
-    await this.ensureStarted()
-    tab.store.appendLocalUserMessage(text, blocks)
-    tab.store.markRunning()
+    if (!tab || tab.closed) return 'failed'
+    if (tab.activeTurn) return 'busy'
+
+    const turn = createTurn()
+    tab.activeTurn = turn
+    tab.store.markPreparing()
     this.emitActivity()
     try {
+      await this.waitForClosingTurns()
+      if (!this.isCurrentTurn(tab, turn)) {
+        this.finishClosedTurn(tab, turn)
+        return 'failed'
+      }
+      if (turn.cancelRequested) {
+        this.completeTurn(tab, turn, null)
+        return 'failed'
+      }
+      await this.ensureStarted()
+      if (!this.isCurrentTurn(tab, turn)) {
+        this.finishClosedTurn(tab, turn)
+        return 'failed'
+      }
+      turn.connectionGeneration = this.activeGeneration
+      if (turn.cancelRequested) {
+        this.completeTurn(tab, turn, null)
+        return 'failed'
+      }
+      if (
+        blocks.some((block) => block.type === 'image') &&
+        this.client?.agentCapabilities.promptCapabilities?.image !== true
+      ) {
+        throw new Error(
+          'The connected ACP agent does not support image prompts',
+        )
+      }
       const sessionId = await this.ensureSession(tab)
-      const response = await this.request<PromptResponse>('session/prompt', {
-        sessionId,
-        prompt: blocks,
-      })
-      tab.store.markTurnEnd(response.stopReason ?? null)
+      if (!this.isCurrentTurn(tab, turn)) {
+        this.finishClosedTurn(tab, turn)
+        return 'failed'
+      }
+      if (turn.cancelRequested) {
+        this.completeTurn(tab, turn, null)
+        return 'failed'
+      }
+
+      tab.store.appendLocalUserMessage(text, blocks)
+      tab.store.markRunning()
+      turn.phase = 'running'
+      turn.promptStarted = true
+      const prompt = this.request<PromptResponse>(
+        'session/prompt',
+        { sessionId, prompt: blocks },
+        { timeoutMs: null, generation: turn.connectionGeneration },
+      )
+      void this.finishPrompt(tab, turn, prompt)
+      this.emitActivity()
+      return 'accepted'
     } catch (error) {
-      tab.store.markTurnEnd(null)
-      tab.store.setStatus('error', this.friendlyError(error))
+      if (this.isCurrentTurn(tab, turn)) {
+        this.failTurn(tab, turn, error)
+      } else {
+        this.finishClosedTurn(tab, turn)
+      }
+      return 'failed'
     }
-    this.emitActivity()
   }
 
   async cancel(tabId: string): Promise<void> {
     const tab = this.tabs.get(tabId)
-    if (!tab || !tab.sessionId || !this.client?.isConnected) return
+    const turn = tab?.activeTurn
+    if (!tab || !turn || turn.cancelRequested) return
+    turn.cancelRequested = true
+    turn.phase = 'cancelling'
+    tab.store.markCancelling()
+    this.emitActivity()
+    this.scheduleCancelGrace(tab, turn)
+
+    if (
+      !tab.sessionId ||
+      !this.client?.isConnected ||
+      turn.connectionGeneration !== this.activeGeneration
+    ) {
+      return
+    }
     this.permissionManager.cancelSession(tab.sessionId)
-    await this.notify('session/cancel', { sessionId: tab.sessionId }).catch(
-      () => undefined,
+    await this.notify(
+      'session/cancel',
+      { sessionId: tab.sessionId },
+      turn.connectionGeneration,
+    ).catch(() => undefined)
+  }
+
+  private async finishPrompt(
+    tab: TabRecord,
+    turn: TurnRecord,
+    prompt: Promise<PromptResponse>,
+  ) {
+    try {
+      const response = await prompt
+      if (this.isCurrentTurn(tab, turn)) {
+        this.completeTurn(tab, turn, response.stopReason ?? null)
+      } else {
+        this.finishClosedTurn(tab, turn)
+      }
+    } catch (error) {
+      if (!this.isCurrentTurn(tab, turn)) {
+        this.finishClosedTurn(tab, turn)
+        return
+      }
+      const code =
+        typeof error === 'object' && error !== null
+          ? (error as { code?: unknown }).code
+          : undefined
+      if (turn.cancelRequested && code === -32800) {
+        this.completeTurn(tab, turn, 'cancelled')
+      } else {
+        this.failTurn(tab, turn, error)
+      }
+    }
+  }
+
+  private isCurrentTurn(tab: TabRecord, turn: TurnRecord): boolean {
+    return (
+      !tab.closed && this.tabs.get(tab.tabId) === tab && tab.activeTurn === turn
     )
+  }
+
+  private completeTurn(
+    tab: TabRecord,
+    turn: TurnRecord,
+    stopReason: ChatSessionState['lastStopReason'],
+  ) {
+    if (!this.isCurrentTurn(tab, turn)) return
+    this.clearTurnTimer(turn)
+    tab.activeTurn = null
+    turn.resolveSettled()
+    tab.store.markTurnEnd(stopReason)
+    this.emitActivity()
+  }
+
+  private failTurn(tab: TabRecord, turn: TurnRecord, error: unknown) {
+    if (!this.isCurrentTurn(tab, turn)) return
+    this.clearTurnTimer(turn)
+    tab.activeTurn = null
+    turn.resolveSettled()
+    tab.store.markTurnEnd(null)
+    tab.store.setStatus('error', this.friendlyError(error))
+    this.emitActivity()
+  }
+
+  private clearTurnTimer(turn: TurnRecord) {
+    if (turn.cancelTimer !== null) {
+      cancelTimeout(turn.cancelTimer)
+      turn.cancelTimer = null
+    }
+  }
+
+  private finishClosedTurn(tab: TabRecord, turn: TurnRecord) {
+    if (tab.activeTurn !== turn) return
+    this.clearTurnTimer(turn)
+    tab.activeTurn = null
+    turn.resolveSettled()
+  }
+
+  private trackClosingTurn(turn: TurnRecord) {
+    this.closingTurns.add(turn)
+    void turn.settled.then(() => {
+      this.closingTurns.delete(turn)
+    })
+  }
+
+  private async waitForClosingTurns(): Promise<void> {
+    while (this.closingTurns.size > 0) {
+      await Promise.all([...this.closingTurns].map((turn) => turn.settled))
+    }
+  }
+
+  private scheduleCancelGrace(tab: TabRecord, turn: TurnRecord) {
+    this.clearTurnTimer(turn)
+    turn.cancelTimer = scheduleTimeout(() => {
+      if (tab.activeTurn !== turn) return
+      const error = new AcpTimeoutError('ACP prompt cancellation')
+      const client = this.client
+      const generation = turn.connectionGeneration
+      if (
+        client &&
+        generation !== null &&
+        generation !== 0 &&
+        generation === this.activeGeneration
+      ) {
+        this.handleDisconnected(client, generation, {
+          kind: 'connection-closed',
+          error,
+        })
+        if (tab.closed) this.finishClosedTurn(tab, turn)
+      } else if (tab.closed) {
+        this.finishClosedTurn(tab, turn)
+      } else {
+        this.failTurn(tab, turn, error)
+      }
+    }, CANCEL_GRACE_MS)
   }
 
   async setMode(tabId: string, modeId: string): Promise<void> {
@@ -631,9 +1336,11 @@ export class AcpSessionService {
     if (!tab) return
     tab.desiredMode = modeId
     tab.store.setModeCurrent(modeId)
-    if (tab.sessionId && this.client?.isConnected) {
+    if (this.client?.isConnected) {
+      const sessionId = await this.ensureSession(tab).catch(() => null)
+      if (!sessionId) return
       await this.request('session/set_mode', {
-        sessionId: tab.sessionId,
+        sessionId,
         modeId,
       }).catch(() => undefined)
     }
@@ -659,10 +1366,11 @@ export class AcpSessionService {
       return
     }
     try {
+      const sessionId = await this.ensureSession(tab)
       const response = await this.request<SetSessionConfigOptionResponse>(
         'session/set_config_option',
         {
-          sessionId: tab.sessionId,
+          sessionId,
           configId,
           value,
         },
@@ -677,18 +1385,49 @@ export class AcpSessionService {
   }
 
   respondPermission(tabId: string, toolCallId: string, optionId: string) {
-    this.permissionManager.respond(toolCallId, optionId)
+    const sessionId = this.tabs.get(tabId)?.sessionId
+    if (!sessionId) return false
+    return this.permissionManager.respond(sessionId, toolCallId, optionId)
   }
 
   async dispose(): Promise<void> {
+    if (this.disposePromise) return this.disposePromise
+    this.disposed = true
+    this.connectionGeneration += 1
+    this.activeGeneration = 0
     this.permissionManager.cancelAll()
     for (const tab of this.tabs.values()) {
       tab.closed = true
+      if (tab.activeTurn) {
+        this.clearTurnTimer(tab.activeTurn)
+        tab.activeTurn.resolveSettled()
+        tab.activeTurn = null
+      }
     }
     this.tabs.clear()
     this.tabBySession.clear()
-    await this.client?.dispose()
+    this.openingBySession.clear()
+    this.closingBySession.clear()
+    this.remoteCloseBySession.clear()
+    for (const turn of this.closingTurns) {
+      this.clearTurnTimer(turn)
+      turn.resolveSettled()
+    }
+    this.closingTurns.clear()
+    const clients = new Set(
+      [this.client, this.startingClient].filter(
+        (client): client is AcpClientPort => client !== null,
+      ),
+    )
     this.client = null
-    this.setAvailability('unknown')
+    this.startingClient = null
+    this.availability = 'unknown'
+    this.startError = null
+    this.availabilityListeners.clear()
+    this.tabsListeners.clear()
+    this.activityListeners.clear()
+    for (const client of clients) this.trackClientDisposal(client)
+    this.disposePromise = this.clientTeardown
+    return this.disposePromise
   }
 }

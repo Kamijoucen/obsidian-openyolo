@@ -11,6 +11,7 @@ import { useSessionService } from '../../contexts/service-context'
 import type { ChatSessionState } from '../../types/chat'
 
 import ChatInput, { AttachedNote, InputImage } from './ChatInput'
+import type { SubmitResult } from './composer'
 import PlanView from './PlanView'
 import Timeline from './Timeline'
 
@@ -102,9 +103,13 @@ function SessionPanel({ tabId, isActive }: SessionPanelProps) {
   }, [service, tabId])
 
   const handleSubmit = useCallback(
-    (text: string, images: InputImage[], notes: AttachedNote[]) => {
+    async (
+      text: string,
+      images: InputImage[],
+      notes: AttachedNote[],
+    ): Promise<SubmitResult> => {
       const blocks = buildPromptBlocks(text, images, notes, vaultBasePath(app))
-      void service.submit(tabId, text, blocks)
+      return service.submit(tabId, text, blocks)
     },
     [service, tabId, app],
   )
@@ -146,7 +151,9 @@ function SessionPanel({ tabId, isActive }: SessionPanelProps) {
         {state.plan.length > 0 ? <PlanView entries={state.plan} /> : null}
         {state.error ? <ErrorBanner error={state.error} /> : null}
         <ChatInput
-          running={state.status === 'running'}
+          running={['preparing', 'running', 'cancelling'].includes(
+            state.status,
+          )}
           disabled={state.status === 'loading'}
           commands={state.commands}
           mode={state.mode}

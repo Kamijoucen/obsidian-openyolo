@@ -66,10 +66,12 @@ export type SpawnedProcess = {
   stdin: NodeJS.WritableStream
   stdout: NodeJS.ReadableStream
   stderr: NodeJS.ReadableStream
+  exited: Promise<{ code: number | null; signal: string | null }>
   onExit: (
     callback: (code: number | null, signal: string | null) => void,
   ) => void
-  kill: () => void
+  closeStdin: () => void
+  kill: (signal?: NodeJS.Signals) => void
 }
 
 export async function spawnOpencodeAcp(params: {
@@ -87,16 +89,51 @@ export async function spawnOpencodeAcp(params: {
   if (!child.stdin || !child.stdout || !child.stderr) {
     throw new Error('Failed to open stdio pipes for opencode acp')
   }
+  const stdin = child.stdin
+  const stdout = child.stdout
+  const stderr = child.stderr
+
+  const exited = new Promise<{
+    code: number | null
+    signal: string | null
+  }>((resolve) => {
+    child.once('exit', (code, signal) => {
+      resolve({ code, signal })
+    })
+  })
+
+  await new Promise<void>((resolve, reject) => {
+    const onSpawn = () => {
+      child.off('error', onError)
+      resolve()
+    }
+    const onError = (error: Error) => {
+      child.off('spawn', onSpawn)
+      reject(error)
+    }
+    child.once('spawn', onSpawn)
+    child.once('error', onError)
+  })
+  // A later child-process error is also reflected by its stdio/exit lifecycle;
+  // keep an error listener installed so EventEmitter does not throw globally.
+  child.on('error', () => undefined)
+
   return {
     pid: child.pid ?? null,
-    stdin: child.stdin,
-    stdout: child.stdout,
-    stderr: child.stderr,
+    stdin,
+    stdout,
+    stderr,
+    exited,
     onExit: (callback) => {
-      child.on('exit', (code, signal) => callback(code, signal))
+      void exited.then(({ code, signal }) => callback(code, signal))
     },
-    kill: () => {
-      child.kill()
+    closeStdin: () => {
+      if (!stdin.destroyed && !stdin.writableEnded) {
+        stdin.end()
+      }
+    },
+    kill: (signal = 'SIGTERM') => {
+      child.kill(signal)
     },
   }
 }

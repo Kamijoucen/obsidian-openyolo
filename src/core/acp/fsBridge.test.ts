@@ -22,6 +22,19 @@ function makeApp(basePath = '/vault/root'): { app: App; adapter: AdapterMock } {
   return { app, adapter }
 }
 
+async function withPlatform<T>(
+  platform: NodeJS.Platform,
+  callback: () => T | Promise<T>,
+): Promise<T> {
+  const original = Object.getOwnPropertyDescriptor(process, 'platform')
+  Object.defineProperty(process, 'platform', { value: platform })
+  try {
+    return await callback()
+  } finally {
+    if (original) Object.defineProperty(process, 'platform', original)
+  }
+}
+
 describe('FsBridge', () => {
   it('reads a file inside the vault', async () => {
     const { app, adapter } = makeApp()
@@ -70,6 +83,26 @@ describe('FsBridge', () => {
     ).rejects.toBeInstanceOf(FsBridgeError)
   })
 
+  it('rejects relative paths', () => {
+    const { app } = makeApp()
+    const bridge = new FsBridge(app)
+    expect(() => bridge.toVaultRelativePath('notes/a.md')).toThrow(
+      FsBridgeError,
+    )
+  })
+
+  it('resolves Unix dot segments before checking the vault boundary', () => {
+    const { app } = makeApp()
+    const bridge = new FsBridge(app)
+
+    expect(bridge.toVaultRelativePath('/vault/root/notes/../safe.md')).toBe(
+      'safe.md',
+    )
+    expect(() =>
+      bridge.toVaultRelativePath('/vault/root/notes/../../outside.md'),
+    ).toThrow(FsBridgeError)
+  })
+
   it('throws when reading a missing file', async () => {
     const { app, adapter } = makeApp()
     adapter.exists.mockResolvedValue(false)
@@ -92,19 +125,19 @@ describe('FsBridge', () => {
   })
 
   it('normalizes windows-style separators', async () => {
-    const { app, adapter } = makeApp('C:/vault')
-    const bridge = new FsBridge(app)
-    await bridge.readTextFile({
-      sessionId: 's1',
-      path: 'C:\\vault\\notes\\a.md',
+    await withPlatform('win32', async () => {
+      const { app, adapter } = makeApp('C:/vault')
+      const bridge = new FsBridge(app)
+      await bridge.readTextFile({
+        sessionId: 's1',
+        path: 'C:\\vault\\notes\\a.md',
+      })
+      expect(adapter.read).toHaveBeenCalledWith('notes/a.md')
     })
-    expect(adapter.read).toHaveBeenCalledWith('notes/a.md')
   })
 
   it('matches drive letter case-insensitively on win32', async () => {
-    const original = Object.getOwnPropertyDescriptor(process, 'platform')
-    Object.defineProperty(process, 'platform', { value: 'win32' })
-    try {
+    await withPlatform('win32', async () => {
       const { app, adapter } = makeApp('C:/vault')
       const bridge = new FsBridge(app)
       await bridge.readTextFile({
@@ -112,8 +145,22 @@ describe('FsBridge', () => {
         path: 'c:/vault/notes/a.md',
       })
       expect(adapter.read).toHaveBeenCalledWith('notes/a.md')
-    } finally {
-      if (original) Object.defineProperty(process, 'platform', original)
-    }
+    })
+  })
+
+  it('resolves Windows dot segments before checking the vault boundary', async () => {
+    await withPlatform('win32', () => {
+      const { app } = makeApp('C:\\vault\\root')
+      const bridge = new FsBridge(app)
+
+      expect(
+        bridge.toVaultRelativePath('c:\\vault\\root\\notes\\..\\safe.md'),
+      ).toBe('safe.md')
+      expect(() =>
+        bridge.toVaultRelativePath(
+          'C:\\vault\\root\\notes\\..\\..\\outside.md',
+        ),
+      ).toThrow(FsBridgeError)
+    })
   })
 })

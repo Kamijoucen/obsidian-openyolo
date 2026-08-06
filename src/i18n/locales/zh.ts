@@ -56,7 +56,8 @@ export const zh: TranslationKeys = {
     opencodeArgsDesc: '追加在 `opencode acp` 之后的参数，每行一个。',
     behavior: '行为',
     defaultMode: '默认模式',
-    defaultModeDesc: '新会话使用的模式。计划为只读，构建可修改文件。',
+    defaultModeDesc:
+      '新会话使用的模式。计划是受限规划模式；能否编辑文件或执行命令取决于你的 opencode 权限配置。',
     systemPrompt: '笔记助手提示词',
     systemPromptDesc:
       '会写入库根目录的 AGENTS.md，作为 opencode 的项目规则。用于引导助手面向笔记查资料与改稿，而不是写代码。',

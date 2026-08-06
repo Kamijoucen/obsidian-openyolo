@@ -59,7 +59,7 @@ export const en: TranslationKeys = {
     behavior: 'Behavior',
     defaultMode: 'Default mode',
     defaultModeDesc:
-      'Mode used for new sessions. Plan is read-only, Build can modify files.',
+      'Mode used for new sessions. Plan is a restricted planning mode; file editing and command execution depend on your opencode permission configuration.',
     systemPrompt: 'Note assistant prompt',
     systemPromptDesc:
       'Written into AGENTS.md at the vault root as opencode project rules. It guides the assistant to work on notes instead of code.',

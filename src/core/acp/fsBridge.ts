@@ -1,3 +1,5 @@
+import * as path from 'node:path'
+
 import type {
   ReadTextFileRequest,
   ReadTextFileResponse,
@@ -26,23 +28,33 @@ export class FsBridge {
     if (typeof adapter.getBasePath !== 'function') {
       throw new FsBridgeError('Vault base path is not available')
     }
-    return toForwardSlashes(adapter.getBasePath()).replace(/\/+$/, '')
+    return adapter.getBasePath()
   }
 
   toVaultRelativePath(absolutePath: string): string {
-    const base = this.vaultBasePath()
-    const normalized = toForwardSlashes(absolutePath).replace(/\/+$/, '')
-    // Windows 文件系统大小写不敏感（盘符尤其常见 c:\ vs C:\）
-    const isWindows = process.platform === 'win32'
-    const baseCmp = isWindows ? base.toLowerCase() : base
-    const pathCmp = isWindows ? normalized.toLowerCase() : normalized
-    if (pathCmp === baseCmp) {
+    const platformPath = process.platform === 'win32' ? path.win32 : path.posix
+    const basePath = this.vaultBasePath()
+    if (!platformPath.isAbsolute(basePath)) {
+      throw new FsBridgeError(`Vault base path is not absolute: ${basePath}`)
+    }
+    if (!platformPath.isAbsolute(absolutePath)) {
+      throw new FsBridgeError(`Path is not absolute: ${absolutePath}`)
+    }
+
+    const base = platformPath.resolve(basePath)
+    const target = platformPath.resolve(absolutePath)
+    const relative = platformPath.relative(base, target)
+    if (relative === '') {
       throw new FsBridgeError(`Path is the vault root: ${absolutePath}`)
     }
-    if (!pathCmp.startsWith(`${baseCmp}/`)) {
+    if (
+      platformPath.isAbsolute(relative) ||
+      relative === '..' ||
+      relative.startsWith(`..${platformPath.sep}`)
+    ) {
       throw new FsBridgeError(`Path is outside the vault: ${absolutePath}`)
     }
-    return normalizePath(normalized.slice(base.length + 1))
+    return normalizePath(toForwardSlashes(relative))
   }
 
   async readTextFile(

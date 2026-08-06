@@ -8,12 +8,22 @@ import type YoloPlugin from '../main'
 import type { YoloSettings } from './schema/setting.types'
 
 export class YoloSettingTab extends PluginSettingTab {
+  private unsubscribeAvailabilityChange: (() => void) | null
+
   constructor(
     app: App,
     private readonly plugin: YoloPlugin,
   ) {
     super(app, plugin)
-    this.plugin.getSessionService().onAvailabilityChange(() => this.update())
+    this.unsubscribeAvailabilityChange = this.plugin
+      .getSessionService()
+      .onAvailabilityChange(() => this.update())
+  }
+
+  dispose(): void {
+    const unsubscribe = this.unsubscribeAvailabilityChange
+    this.unsubscribeAvailabilityChange = null
+    unsubscribe?.()
   }
 
   override getSettingDefinitions(): SettingDefinitionItem[] {
