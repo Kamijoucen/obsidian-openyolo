@@ -1426,7 +1426,7 @@ export class AcpSessionService {
     this.availabilityListeners.clear()
     this.tabsListeners.clear()
     this.activityListeners.clear()
-    for (const client of clients) this.trackClientDisposal(client)
+    for (const client of clients) void this.trackClientDisposal(client)
     this.disposePromise = this.clientTeardown
     return this.disposePromise
   }

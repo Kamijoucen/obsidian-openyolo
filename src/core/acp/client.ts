@@ -268,8 +268,8 @@ export class AcpClient implements AcpClientPort {
       this.connection = connection
       void connection.closed.then(() => {
         if (this.connection !== connection) return
-        const error =
-          connection.signal.reason ?? new Error('ACP connection closed')
+        const reason: unknown = connection.signal.reason
+        const error = reason ?? new Error('ACP connection closed')
         reportDisconnect({ kind: 'connection-closed', error })
         this.connection = null
         this.initialized = false
