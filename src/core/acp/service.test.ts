@@ -284,6 +284,37 @@ describe('AcpSessionService', () => {
     expect(service.getState(tabId)?.status).toBe('idle')
   })
 
+  it('does not apply the control-request timeout to a prompt turn', async () => {
+    jest.useFakeTimers()
+    try {
+      const prompt = deferred<PromptResponse>()
+      const client = new FakeClient('A')
+      client.queueResponse('session/prompt', prompt.promise)
+      const { service } = makeService(client)
+      const tabId = service.createTab()
+      await flushMicrotasks()
+
+      expect(await service.submit(tabId, 'long task', PROMPT)).toBe('accepted')
+      const promptRequest = client.requests.find(
+        (request) => request.method === 'session/prompt',
+      )
+      expect(promptRequest?.options).toBeUndefined()
+
+      jest.advanceTimersByTime(60_000)
+      await flushMicrotasks()
+
+      expect(client.isConnected).toBe(true)
+      expect(service.getAvailability()).toBe('ready')
+      expect(service.getState(tabId)?.status).toBe('running')
+
+      prompt.resolve({ stopReason: 'end_turn' })
+      await flushMicrotasks()
+      expect(service.getState(tabId)?.status).toBe('idle')
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
   it('returns failed without a local user entry when connect fails', async () => {
     const connect = deferred<undefined>()
     const client = new FakeClient('A', connect)

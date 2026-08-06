@@ -985,7 +985,10 @@ export class AcpSessionService {
       throw new Error('ACP client is not connected')
     }
     this.assertActiveGeneration(generation)
-    const timeoutMs = options.timeoutMs ?? CONTROL_REQUEST_TIMEOUT_MS
+    const timeoutMs =
+      options.timeoutMs === undefined
+        ? CONTROL_REQUEST_TIMEOUT_MS
+        : options.timeoutMs
     const controller =
       timeoutMs === null && !options.signal ? null : new AbortController()
     const abortFromCaller = () => {
