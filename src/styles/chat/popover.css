@@ -84,6 +84,13 @@
   outline: none;
 }
 
+.yolo-popover-surface--default
+  .yolo-model-select-list
+  > .yolo-popover-item:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: -2px;
+}
+
 /* 首/末项高亮贴面板边缘：列表不再纵向留白，圆角交给边缘项。 */
 .yolo-popover-surface--default
   .yolo-model-select-list
@@ -102,6 +109,9 @@
 .yolo-popover-surface--default
   .yolo-model-select-list
   > .yolo-popover-item:hover,
+.yolo-popover-surface--default
+  .yolo-model-select-list
+  > .yolo-popover-item:focus-visible,
 .yolo-popover-surface--default
   .yolo-model-select-list
   > .yolo-popover-item[data-highlighted] {

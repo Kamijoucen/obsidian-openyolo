@@ -1,3 +1,4 @@
+import type { ContentBlock } from '@agentclientprotocol/sdk'
 import { Brain, ChevronDown, ChevronRight } from 'lucide-react'
 import { memo, useState } from 'react'
 
@@ -6,6 +7,65 @@ import { useSettings } from '../../contexts/settings-context'
 import type { ChatAssistantEntry, ChatUserEntry } from '../../types/chat'
 
 import StreamingMarkdown from './StreamingMarkdown'
+
+const EMBEDDED_TEXT_PREVIEW_LIMIT = 20_000
+
+function NonTextContentBlockView({ block }: { block: ContentBlock }) {
+  const { t } = useLanguage()
+  switch (block.type) {
+    case 'text':
+      return null
+    case 'image':
+      return (
+        <img
+          className="yolo-acp-assistant-image"
+          src={`data:${block.mimeType};base64,${block.data}`}
+          alt={t('chat.attachedImage', 'Attached image')}
+          loading="lazy"
+        />
+      )
+    case 'audio':
+      return (
+        <audio
+          className="yolo-acp-assistant-audio"
+          controls
+          src={`data:${block.mimeType};base64,${block.data}`}
+          aria-label={t('chat.attachedAudio', 'Attached audio')}
+        />
+      )
+    case 'resource_link':
+      return (
+        <span className="yolo-acp-user-link-chip" title={block.uri}>
+          {block.title || block.name || block.uri}
+        </span>
+      )
+    case 'resource': {
+      const resource = block.resource
+      if ('text' in resource) {
+        const truncated = resource.text.length > EMBEDDED_TEXT_PREVIEW_LIMIT
+        const preview = truncated
+          ? resource.text.slice(0, EMBEDDED_TEXT_PREVIEW_LIMIT)
+          : resource.text
+        return (
+          <details className="yolo-acp-assistant-resource">
+            <summary>{resource.uri}</summary>
+            <pre>{preview}</pre>
+            {truncated ? (
+              <div className="yolo-acp-history-empty">
+                {t('chat.contentTruncated', 'Content preview truncated.')}
+              </div>
+            ) : null}
+          </details>
+        )
+      }
+      return (
+        <span className="yolo-acp-user-link-chip" title={resource.uri}>
+          {resource.uri}
+        </span>
+      )
+    }
+  }
+}
 
 export const UserEntryView = memo(function UserEntryView({
   entry,
@@ -60,6 +120,7 @@ export const AssistantEntryView = memo(function AssistantEntryView({
   const { t } = useLanguage()
   const [reasoningOpen, setReasoningOpen] = useState(true)
   const showReasoning = settings.showReasoning && entry.reasoning.length > 0
+  const nonTextBlocks = entry.blocks.filter((block) => block.type !== 'text')
 
   return (
     <div className="yolo-chat-messages-assistant">
@@ -68,6 +129,7 @@ export const AssistantEntryView = memo(function AssistantEntryView({
           <button
             type="button"
             className="yolo-assistant-message-metadata-toggle"
+            aria-expanded={reasoningOpen}
             onClick={() => setReasoningOpen(!reasoningOpen)}
           >
             <span className="yolo-assistant-message-metadata-label">
@@ -94,6 +156,13 @@ export const AssistantEntryView = memo(function AssistantEntryView({
         </div>
       ) : null}
       {entry.text ? <StreamingMarkdown content={entry.text} /> : null}
+      {nonTextBlocks.length > 0 ? (
+        <div className="yolo-acp-assistant-content-blocks">
+          {nonTextBlocks.map((block, index) => (
+            <NonTextContentBlockView key={index} block={block} />
+          ))}
+        </div>
+      ) : null}
     </div>
   )
 })

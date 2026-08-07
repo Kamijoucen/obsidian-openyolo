@@ -48,9 +48,12 @@ export async function findOnPath(
 export async function resolveOpencodeBinary(
   configuredPath: string,
 ): Promise<string | null> {
-  const env = await getShellEnv()
   const trimmed = configuredPath.trim()
   if (trimmed) {
+    // spawn() resolves a relative executable against its cwd, while access()
+    // resolves it against the plugin process cwd. Reject that ambiguous setup
+    // so validation and execution always refer to the same file.
+    if (!path.isAbsolute(trimmed)) return null
     try {
       await access(trimmed, constants.X_OK)
       return trimmed
@@ -58,6 +61,7 @@ export async function resolveOpencodeBinary(
       return null
     }
   }
+  const env = await getShellEnv()
   return findOnPath('opencode', env)
 }
 

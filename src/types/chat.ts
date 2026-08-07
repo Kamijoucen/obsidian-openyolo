@@ -2,7 +2,6 @@ import type {
   AvailableCommand,
   ContentBlock,
   PermissionOption,
-  PlanEntry,
   SessionConfigOption,
   SessionMode,
   StopReason,
@@ -20,6 +19,7 @@ export type PendingPermission = {
 export type ToolCallState = {
   toolCallId: string
   title: string
+  name?: string
   kind: ToolKind
   status: ToolCallStatus
   content: ToolCallContent[]
@@ -27,6 +27,16 @@ export type ToolCallState = {
   rawInput?: unknown
   rawOutput?: unknown
   permission: PendingPermission | null
+}
+
+export type TodoStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled'
+
+export type TodoPriority = 'high' | 'medium' | 'low'
+
+export type TodoEntry = {
+  content: string
+  status: TodoStatus
+  priority: TodoPriority
 }
 
 export type ChatUserEntry = {
@@ -45,6 +55,7 @@ export type ChatAssistantEntry = {
   timestamp: number
   text: string
   reasoning: string
+  blocks: ContentBlock[]
   streaming: boolean
 }
 
@@ -72,7 +83,7 @@ export type ChatSessionState = {
   awaitingResponse: boolean
   error: string | null
   entries: TimelineEntry[]
-  plan: PlanEntry[]
+  plan: TodoEntry[]
   usage: UsageUpdate | null
   mode: SessionModeState | null
   commands: AvailableCommand[]

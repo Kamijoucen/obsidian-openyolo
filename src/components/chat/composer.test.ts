@@ -1,6 +1,7 @@
 import {
   buildComposerAttachments,
-  hasComposerContent,
+  hasComposerText,
+  isAutoAttachedCurrentNote,
   settleComposerDraft,
 } from './composer'
 
@@ -32,28 +33,29 @@ describe('buildComposerAttachments', () => {
   })
 })
 
-describe('hasComposerContent', () => {
-  it('rejects an empty draft', () => {
-    expect(hasComposerContent('  ', [], [])).toBe(false)
+describe('hasComposerText', () => {
+  it.each(['', '  \n '])('rejects empty text: %j', (text) => {
+    expect(hasComposerText(text)).toBe(false)
   })
 
-  it.each([
-    ['text', 'hello', [], []],
-    ['image', '', [{}], []],
-    ['current note', '', [], [{ path: 'current.md', name: 'current' }]],
-    ['selected note', '', [], [{ path: 'selected.md', name: 'selected' }]],
-    [
-      'external file',
-      '',
-      [],
-      [{ path: '/tmp/context.txt', name: 'context.txt', absolute: true }],
-    ],
-  ])(
-    'accepts a draft containing only %s',
-    (_kind, text, images, attachments) => {
-      expect(hasComposerContent(text, images, attachments)).toBe(true)
-    },
-  )
+  it('accepts non-whitespace text', () => {
+    expect(hasComposerText('hello')).toBe(true)
+    expect(hasComposerText('  explain this  ')).toBe(true)
+  })
+})
+
+describe('isAutoAttachedCurrentNote', () => {
+  it('only reserves the active note while automatic attachment is enabled', () => {
+    expect(isAutoAttachedCurrentNote(true, 'current.md', 'current.md')).toBe(
+      true,
+    )
+    expect(isAutoAttachedCurrentNote(false, 'current.md', 'current.md')).toBe(
+      false,
+    )
+    expect(isAutoAttachedCurrentNote(true, 'current.md', 'other.md')).toBe(
+      false,
+    )
+  })
 })
 
 describe('settleComposerDraft', () => {
@@ -62,6 +64,7 @@ describe('settleComposerDraft', () => {
     images: [{ data: 'image' }],
     notes: [{ path: 'selected.md' }],
     externalFiles: [{ path: '/tmp/context.txt' }],
+    excludedCurrentPath: 'current.md',
   }
 
   it('clears only text and images when accepted', () => {
@@ -72,6 +75,7 @@ describe('settleComposerDraft', () => {
       images: [],
       notes: draft.notes,
       externalFiles: draft.externalFiles,
+      excludedCurrentPath: null,
     })
     expect(settled.notes).toBe(draft.notes)
     expect(settled.externalFiles).toBe(draft.externalFiles)

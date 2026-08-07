@@ -14,6 +14,46 @@ export type InlineDiffLine = {
   tokens: InlineDiffToken[]
 }
 
+export const DIFF_MAX_INPUT_CHARS = 200_000
+export const DIFF_MAX_INPUT_LINES = 4_000
+const DIFF_MAX_COMPUTATION_TIME_MS = 100
+
+type BoundedInlineDiff = {
+  lines: InlineDiffLine[]
+  inputTruncated: boolean
+}
+
+type BoundedLines = {
+  lines: string[]
+  truncated: boolean
+}
+
+export function splitBoundedDiffText(
+  text: string,
+  maxChars = DIFF_MAX_INPUT_CHARS,
+  maxLines = DIFF_MAX_INPUT_LINES,
+): BoundedLines {
+  const charLimited = text.slice(0, maxChars)
+  const allLines = charLimited.split('\n')
+  const lineLimited = allLines.slice(0, maxLines)
+  return {
+    lines: lineLimited,
+    truncated: text.length > maxChars || allLines.length > maxLines,
+  }
+}
+
+export function createBoundedInlineDiff(
+  originalText: string,
+  modifiedText: string,
+): BoundedInlineDiff {
+  const original = splitBoundedDiffText(originalText)
+  const modified = splitBoundedDiffText(modifiedText)
+  return {
+    lines: createInlineDiffLines(original.lines, modified.lines),
+    inputTruncated: original.truncated || modified.truncated,
+  }
+}
+
 export function createInlineDiffLines(
   originalLines: string[],
   modifiedLines: string[],
@@ -39,7 +79,7 @@ export function createInlineDiffLines(
   const advOptions: ILinesDiffComputerOptions = {
     ignoreTrimWhitespace: false,
     computeMoves: false,
-    maxComputationTimeMs: 0,
+    maxComputationTimeMs: DIFF_MAX_COMPUTATION_TIME_MS,
   }
   const advDiffComputer = new AdvancedLinesDiffComputer()
   const advLineChanges = advDiffComputer.computeDiff(

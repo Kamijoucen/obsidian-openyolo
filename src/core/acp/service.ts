@@ -24,15 +24,15 @@ import type {
   AcpClientPort,
   AcpDisconnectReason,
 } from './client'
+import { sanitizeDebugPayload } from './debug'
 import { FsBridge } from './fsBridge'
 import { SessionStateStore } from './mapper'
 import { PermissionManager } from './permissions'
 import { cancelTimeout, scheduleTimeout } from './timers'
 import type { TimerHandle } from './timers'
 
-export type ChatTabInfo = {
+type ChatTabInfo = {
   tabId: string
-  isHistory: boolean
 }
 
 export type AvailabilityState = 'unknown' | 'starting' | 'ready' | 'unavailable'
@@ -53,6 +53,10 @@ type TabRecord = {
   store: SessionStateStore
   sessionId: string | null
   desiredMode: string | null
+  controlMutationTail: Promise<void>
+  modeMutationRevision: number
+  configMutationRevisions: Map<string, number>
+  controlError: string | null
   sessionPromise: Promise<string> | null
   attachedGeneration: number | null
   activeTurn: TurnRecord | null
@@ -164,6 +168,7 @@ export class AcpSessionService {
   private activeGeneration = 0
   private disposed = false
   private disposePromise: Promise<void> | null = null
+  private restartPromise: Promise<void> | null = null
   private clientTeardown: Promise<void> = Promise.resolve()
   private availability: AvailabilityState = 'unknown'
   private startError: string | null = null
@@ -175,9 +180,10 @@ export class AcpSessionService {
   private closingTurns = new Set<TurnRecord>()
   private permissionManager: PermissionManager
   private availabilityListeners = new Set<(state: AvailabilityState) => void>()
-  private tabsListeners = new Set<() => void>()
   private activityListeners = new Set<() => void>()
   private lastConfigOptions: SessionConfigOption[] = []
+  private eagerProbeStarted = false
+  private eagerProbePromise: Promise<void> | null = null
 
   constructor(
     private readonly app: App,
@@ -244,6 +250,7 @@ export class AcpSessionService {
 
   async ensureStarted(): Promise<void> {
     if (this.disposed) throw new Error('ACP session service is disposed')
+    if (this.restartPromise) return this.restartPromise
     if (this.client?.isConnected) {
       this.setAvailability('ready')
       return
@@ -255,6 +262,76 @@ export class AcpSessionService {
       await promise
     } finally {
       if (this.startPromise === promise) this.startPromise = null
+    }
+  }
+
+  /**
+   * Replaces the ACP process using the latest settings while retaining open
+   * tabs and their remote session ids. In-flight turns are failed explicitly;
+   * a later operation will resume each retained session on the new client.
+   */
+  async restart(): Promise<void> {
+    if (this.disposed) throw new Error('ACP session service is disposed')
+    if (this.restartPromise) {
+      await this.restartPromise
+      if (this.eagerProbePromise) await this.eagerProbePromise
+      return
+    }
+    const restarting = Promise.resolve().then(() => this.restartInternal())
+    this.restartPromise = restarting
+    try {
+      await restarting
+    } finally {
+      if (this.restartPromise === restarting) this.restartPromise = null
+    }
+    await this.retryEagerProbe()
+  }
+
+  private async restartInternal(): Promise<void> {
+    const restartError = new Error('ACP connection restarted')
+    this.setAvailability('starting')
+    this.connectionGeneration += 1
+    this.activeGeneration = 0
+    this.permissionManager.cancelAll()
+
+    for (const tab of this.tabs.values()) {
+      tab.attachedGeneration = null
+      tab.sessionPromise = null
+      tab.loadController?.abort(restartError)
+      const turn = tab.activeTurn
+      if (turn) this.failTurn(tab, turn, restartError)
+    }
+    for (const turn of this.closingTurns) {
+      this.clearTurnTimer(turn)
+      turn.resolveSettled()
+    }
+    this.closingTurns.clear()
+    this.remoteCloseBySession.clear()
+
+    const clients = new Set(
+      [this.client, this.startingClient].filter(
+        (client): client is AcpClientPort => client !== null,
+      ),
+    )
+    this.client = null
+    this.startingClient = null
+    // A superseded connect is guarded by its connection generation. Do not
+    // let a non-cooperative client implementation keep this restart blocked.
+    this.startPromise = null
+    for (const client of clients) {
+      void this.trackClientDisposal(client, restartError)
+    }
+    await this.clientTeardown
+    if (this.disposed) {
+      throw new Error('ACP session service was disposed while restarting')
+    }
+
+    const starting = this.start()
+    this.startPromise = starting
+    try {
+      await starting
+    } finally {
+      if (this.startPromise === starting) this.startPromise = null
     }
   }
 
@@ -451,17 +528,6 @@ export class AcpSessionService {
     this.emitActivity()
   }
 
-  onTabsChange(listener: () => void): () => void {
-    this.tabsListeners.add(listener)
-    return () => {
-      this.tabsListeners.delete(listener)
-    }
-  }
-
-  private emitTabsChange() {
-    for (const listener of this.tabsListeners) listener()
-  }
-
   onActivityChange(listener: () => void): () => void {
     this.activityListeners.add(listener)
     return () => {
@@ -490,7 +556,6 @@ export class AcpSessionService {
   listTabs(): ChatTabInfo[] {
     return [...this.tabs.values()].map((tab) => ({
       tabId: tab.tabId,
-      isHistory: tab.sessionId !== null,
     }))
   }
 
@@ -514,6 +579,7 @@ export class AcpSessionService {
   createTab(): string {
     const tabId = nextTabId()
     const store = new SessionStateStore('')
+    const desiredMode = this.getSettings().defaultMode
     if (this.lastConfigOptions.length > 0) {
       store.applyConfigOptions(this.lastConfigOptions)
       const modes = modesFromConfigOptions(this.lastConfigOptions)
@@ -521,11 +587,16 @@ export class AcpSessionService {
         store.applyModes(modes.current, modes.available)
       }
     }
+    if (desiredMode) store.setModeCurrent(desiredMode)
     const tab: TabRecord = {
       tabId,
       store,
       sessionId: null,
-      desiredMode: this.getSettings().defaultMode,
+      desiredMode,
+      controlMutationTail: Promise.resolve(),
+      modeMutationRevision: 0,
+      configMutationRevisions: new Map(),
+      controlError: null,
       sessionPromise: null,
       attachedGeneration: null,
       activeTurn: null,
@@ -534,13 +605,46 @@ export class AcpSessionService {
       closed: false,
     }
     this.tabs.set(tabId, tab)
-    this.emitTabsChange()
-    // Eagerly create the ACP session so model/effort selectors populate from
-    // opencode right away instead of after the first prompt.
-    void this.ensureStarted()
-      .then(() => this.ensureSession(tab))
-      .catch(() => undefined)
+    // Keep one probe in flight until a tab successfully populates model/effort
+    // selectors. Later tabs reuse cached options and avoid persisting a trail
+    // of empty remote sessions before the user sends anything.
+    void this.startEagerProbe(tab)
     return tabId
+  }
+
+  private startEagerProbe(tab: TabRecord): Promise<void> {
+    if (
+      this.eagerProbeStarted ||
+      this.lastConfigOptions.length > 0 ||
+      tab.closed
+    ) {
+      return Promise.resolve()
+    }
+    if (this.eagerProbePromise) return this.eagerProbePromise
+
+    const probing = (async () => {
+      try {
+        await this.ensureStarted()
+        if (tab.closed || this.tabs.get(tab.tabId) !== tab) {
+          return
+        }
+        await this.ensureSession(tab)
+        this.eagerProbeStarted = true
+      } catch {
+        // A later tab creation or a successful backend restart may retry.
+      }
+    })()
+    this.eagerProbePromise = probing
+    return probing.finally(() => {
+      if (this.eagerProbePromise === probing) this.eagerProbePromise = null
+    })
+  }
+
+  private async retryEagerProbe(): Promise<void> {
+    if (this.eagerProbePromise) await this.eagerProbePromise
+    if (this.eagerProbeStarted || this.lastConfigOptions.length > 0) return
+    const tab = [...this.tabs.values()].find((candidate) => !candidate.closed)
+    if (tab) await this.startEagerProbe(tab)
   }
 
   /**
@@ -557,7 +661,7 @@ export class AcpSessionService {
     } catch {
       // fall through to a fresh tab
     }
-    return this.createTab()
+    return this.listTabs()[0]?.tabId ?? this.createTab()
   }
 
   async openHistoryTab(sessionId: string, title: string): Promise<string> {
@@ -597,6 +701,10 @@ export class AcpSessionService {
       store,
       sessionId,
       desiredMode: null,
+      controlMutationTail: Promise.resolve(),
+      modeMutationRevision: 0,
+      configMutationRevisions: new Map(),
+      controlError: null,
       sessionPromise: null,
       attachedGeneration: null,
       activeTurn: null,
@@ -608,7 +716,6 @@ export class AcpSessionService {
     this.tabBySession.set(sessionId, tabId)
     store.setSessionId(sessionId)
     store.setStatus('loading')
-    this.emitTabsChange()
     const loadController = new AbortController()
     tab.loadController = loadController
     tab.loadGeneration = generation
@@ -628,13 +735,28 @@ export class AcpSessionService {
       }
       await this.applySessionSetup(tab, sessionId, response, generation)
       this.assertActiveGeneration(generation)
+      await this.applyDesiredMode(tab, sessionId, response, generation)
+      this.assertActiveGeneration(generation)
       tab.attachedGeneration = generation
       store.markTurnEnd(null)
     } catch (error) {
-      if (tab.closed || this.tabs.get(tabId) !== tab) throw error
-      if (generation === this.activeGeneration) {
-        store.setStatus('error', this.friendlyError(error))
+      const replacementGeneration = tab.activeTurn?.connectionGeneration
+      const hasReplacement =
+        (tab.attachedGeneration !== null &&
+          tab.attachedGeneration !== generation) ||
+        (replacementGeneration !== null &&
+          replacementGeneration !== undefined &&
+          replacementGeneration !== generation)
+      if (!hasReplacement && !tab.closed && this.tabs.get(tabId) === tab) {
+        tab.closed = true
+        this.tabs.delete(tabId)
+        if (this.tabBySession.get(sessionId) === tabId) {
+          this.tabBySession.delete(sessionId)
+          this.permissionManager.cancelSession(sessionId)
+        }
+        this.emitActivity()
       }
+      throw error
     } finally {
       if (tab.loadController === loadController) {
         tab.loadController = null
@@ -689,7 +811,6 @@ export class AcpSessionService {
       ]).then(() => undefined)
       this.closingBySession.set(sessionId, closing)
     }
-    this.emitTabsChange()
     this.emitActivity()
     void cancellation
     if (closing && closingSessionId) {
@@ -863,30 +984,31 @@ export class AcpSessionService {
     await this.applySessionSetup(tab, response.sessionId, response, generation)
     this.assertActiveGeneration(generation)
     tab.attachedGeneration = generation
-
-    const desired = tab.desiredMode
-    const modes = modesFromConfigOptions(response.configOptions)
-    if (desired) {
-      const available = modes?.available ?? response.modes?.availableModes ?? []
-      const current = modes?.current ?? response.modes?.currentModeId
-      if (
-        available.some((mode) => mode.id === desired) &&
-        current !== desired
-      ) {
-        await this.request(
-          'session/set_mode',
-          {
-            sessionId: response.sessionId,
-            modeId: desired,
-          },
-          { generation },
-        )
-        tab.store.setModeCurrent(desired)
-      }
-    }
+    await this.applyDesiredMode(tab, response.sessionId, response, generation)
     this.assertActiveGeneration(generation)
-    this.emitTabsChange()
     return response.sessionId
+  }
+
+  private async applyDesiredMode(
+    tab: TabRecord,
+    sessionId: string,
+    response: SessionSetupResponse,
+    generation: number,
+  ): Promise<void> {
+    const desired = tab.desiredMode
+    if (!desired) return
+    const modes = modesFromConfigOptions(response.configOptions)
+    const available = modes?.available ?? response.modes?.availableModes ?? []
+    const current = modes?.current ?? response.modes?.currentModeId
+    if (!available.some((mode) => mode.id === desired) || current === desired) {
+      return
+    }
+    await this.request(
+      'session/set_mode',
+      { sessionId, modeId: desired },
+      { generation },
+    )
+    tab.store.setModeCurrent(desired)
   }
 
   private async applySessionSetup(
@@ -908,8 +1030,8 @@ export class AcpSessionService {
       tab.store.applyModes(modes.current, modes.available)
     }
     if (response.configOptions) {
-      this.setLastConfigOptions(response.configOptions)
       tab.store.applyConfigOptions(response.configOptions)
+      this.setLastConfigOptions(response.configOptions)
       await this.applyConfigSelections(
         tab,
         sessionId,
@@ -966,7 +1088,11 @@ export class AcpSessionService {
 
   private debug(event: string, payload?: unknown) {
     if (!this.getSettings().debugLog) return
-    console.debug('[openyolo]', event, payload ?? '')
+    console.debug(
+      '[openyolo]',
+      event,
+      payload === undefined ? '' : sanitizeDebugPayload(event, payload),
+    )
   }
 
   private async request<T>(
@@ -1016,10 +1142,6 @@ export class AcpSessionService {
                 timer = scheduleTimeout(() => {
                   const error = new AcpTimeoutError(`ACP ${method}`)
                   controller?.abort(error)
-                  this.handleDisconnected(client, generation, {
-                    kind: 'connection-closed',
-                    error,
-                  })
                   reject(error)
                 }, timeoutMs)
               }),
@@ -1083,8 +1205,10 @@ export class AcpSessionService {
     options: SessionConfigOption[],
     generation = this.activeGeneration,
   ) {
+    if (tab.closed) return
     let currentOptions = options
     const apply = async (selection: { configId: string; value: string }) => {
+      if (tab.closed) return
       const res = await this.request<SetSessionConfigOptionResponse>(
         'session/set_config_option',
         {
@@ -1097,6 +1221,7 @@ export class AcpSessionService {
         this.assertActiveGeneration(generation)
         return null
       })
+      if (tab.closed) return
       if (res?.configOptions) {
         currentOptions = res.configOptions
         this.setLastConfigOptions(res.configOptions)
@@ -1132,6 +1257,7 @@ export class AcpSessionService {
   ): Promise<SubmitResult> {
     const tab = this.tabs.get(tabId)
     if (!tab || tab.closed) return 'failed'
+    if (text.trim().length === 0) return 'failed'
     if (tab.activeTurn) return 'busy'
 
     const turn = createTurn()
@@ -1334,19 +1460,69 @@ export class AcpSessionService {
     }, CANCEL_GRACE_MS)
   }
 
+  private enqueueControlMutation(
+    tab: TabRecord,
+    operation: () => Promise<void>,
+  ): Promise<void> {
+    const running = tab.controlMutationTail
+      .catch(() => undefined)
+      .then(async () => {
+        if (!this.canMutateTab(tab)) return
+        await operation()
+      })
+    // Keep the queue usable after any unexpected implementation error while
+    // returning the real operation promise to the caller.
+    tab.controlMutationTail = running.catch(() => undefined)
+    return running
+  }
+
+  private canMutateTab(tab: TabRecord): boolean {
+    return !tab.closed && this.tabs.get(tab.tabId) === tab
+  }
+
+  private reportControlError(tab: TabRecord, error: unknown) {
+    if (!this.canMutateTab(tab)) return
+    const message = this.friendlyError(error)
+    tab.controlError = message
+    const state = tab.store.getState()
+    tab.store.setStatus(state.status, message)
+  }
+
+  private clearControlError(tab: TabRecord) {
+    const message = tab.controlError
+    if (!message || !this.canMutateTab(tab)) return
+    tab.controlError = null
+    const state = tab.store.getState()
+    if (state.error === message) tab.store.setStatus(state.status, null)
+  }
+
   async setMode(tabId: string, modeId: string): Promise<void> {
     const tab = this.tabs.get(tabId)
-    if (!tab) return
+    if (!tab || tab.closed) return
+    const revision = ++tab.modeMutationRevision
     tab.desiredMode = modeId
-    tab.store.setModeCurrent(modeId)
-    if (this.client?.isConnected) {
-      const sessionId = await this.ensureSession(tab).catch(() => null)
-      if (!sessionId) return
-      await this.request('session/set_mode', {
-        sessionId,
-        modeId,
-      }).catch(() => undefined)
-    }
+    return this.enqueueControlMutation(tab, async () => {
+      if (!this.client?.isConnected) {
+        if (!this.canMutateTab(tab)) return
+        tab.store.setModeCurrent(modeId)
+        if (revision === tab.modeMutationRevision) this.clearControlError(tab)
+        return
+      }
+      try {
+        const sessionId = await this.ensureSession(tab)
+        if (!this.canMutateTab(tab)) return
+        await this.request('session/set_mode', { sessionId, modeId })
+        if (!this.canMutateTab(tab)) return
+        tab.store.setModeCurrent(modeId)
+        if (revision === tab.modeMutationRevision) this.clearControlError(tab)
+      } catch (error) {
+        if (!this.canMutateTab(tab) || revision !== tab.modeMutationRevision) {
+          return
+        }
+        tab.desiredMode = tab.store.getState().mode?.current ?? null
+        this.reportControlError(tab, error)
+      }
+    })
   }
 
   async setConfigOption(
@@ -1355,40 +1531,70 @@ export class AcpSessionService {
     value: string,
   ): Promise<void> {
     const tab = this.tabs.get(tabId)
-    if (!tab) return
-    this.persistConfigSelection(configId, value)
-    if (!tab.sessionId || !this.client?.isConnected) {
-      const optimistic = tab.store
-        .getState()
-        .configOptions.map((option) =>
-          option.id === configId && option.type === 'select'
-            ? { ...option, currentValue: value }
-            : option,
+    if (!tab || tab.closed) return
+    const revision = (tab.configMutationRevisions.get(configId) ?? 0) + 1
+    tab.configMutationRevisions.set(configId, revision)
+    return this.enqueueControlMutation(tab, async () => {
+      const isLatest = () =>
+        tab.configMutationRevisions.get(configId) === revision
+
+      try {
+        // A fresh tab may display cached selectors before it owns a remote
+        // session. Model-dependent options (for example thought_level) cannot
+        // be updated safely by changing only currentValue: the agent must
+        // recompute and return the full configOptions set for the new model.
+        const sessionId = await this.ensureSession(tab)
+        if (!this.canMutateTab(tab)) return
+        const currentOption = tab.store
+          .getState()
+          .configOptions.find((option) => option.id === configId)
+        if (
+          !currentOption ||
+          currentOption.type !== 'select' ||
+          !flatSelectValues(currentOption).includes(value)
+        ) {
+          // A dependent option can disappear while this operation waits behind
+          // a model change. Never send or persist a value from the stale menu.
+          return
+        }
+        const response = await this.request<SetSessionConfigOptionResponse>(
+          'session/set_config_option',
+          { sessionId, configId, value },
         )
-      tab.store.applyConfigOptions(optimistic)
-      return
-    }
-    try {
-      const sessionId = await this.ensureSession(tab)
-      const response = await this.request<SetSessionConfigOptionResponse>(
-        'session/set_config_option',
-        {
-          sessionId,
-          configId,
-          value,
-        },
-      )
-      if (response.configOptions) {
+        if (!this.canMutateTab(tab)) return
+        if (!Array.isArray(response.configOptions)) {
+          throw new Error(
+            'ACP session/set_config_option did not return configOptions',
+          )
+        }
+        const confirmedOption = response.configOptions.find(
+          (option) => option.id === configId,
+        )
+        if (
+          !confirmedOption ||
+          confirmedOption.type !== 'select' ||
+          confirmedOption.currentValue !== value
+        ) {
+          throw new Error(`ACP did not apply config option: ${configId}`)
+        }
         this.setLastConfigOptions(response.configOptions)
         tab.store.applyConfigOptions(response.configOptions)
+        const modes = modesFromConfigOptions(response.configOptions)
+        if (modes) tab.store.applyModes(modes.current, modes.available)
+        this.persistConfigSelection(configId, value)
+        if (isLatest()) this.clearControlError(tab)
+      } catch (error) {
+        if (this.canMutateTab(tab) && isLatest()) {
+          this.reportControlError(tab, error)
+        }
       }
-    } catch {
-      // keep previous config options on failure
-    }
+    })
   }
 
   respondPermission(tabId: string, toolCallId: string, optionId: string) {
-    const sessionId = this.tabs.get(tabId)?.sessionId
+    const tab = this.tabs.get(tabId)
+    if (!tab || tab.closed) return false
+    const sessionId = tab.sessionId
     if (!sessionId) return false
     return this.permissionManager.respond(sessionId, toolCallId, optionId)
   }
@@ -1427,7 +1633,6 @@ export class AcpSessionService {
     this.availability = 'unknown'
     this.startError = null
     this.availabilityListeners.clear()
-    this.tabsListeners.clear()
     this.activityListeners.clear()
     for (const client of clients) void this.trackClientDisposal(client)
     this.disposePromise = this.clientTeardown

@@ -1,0 +1,173 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - '*.*.*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Verify and build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify tag commit is on main
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main; then
+            echo "::error::Release tags must point to a commit on main."
+            exit 1
+          fi
+
+      - name: Verify release metadata
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs'
+
+          const tag = process.env.RELEASE_TAG ?? ''
+          const fail = (message) => {
+            console.error(`::error::${message}`)
+            process.exitCode = 1
+          }
+          const readJson = (path) =>
+            JSON.parse(readFileSync(path, 'utf8'))
+
+          if (!/^\d+\.\d+\.\d+$/.test(tag)) {
+            fail(`Release tag must be a bare stable SemVer (for example 1.0.9), received: ${tag}`)
+          }
+
+          const manifest = readJson('manifest.json')
+          const packageJson = readJson('package.json')
+          const packageLock = readJson('package-lock.json')
+          const versions = readJson('versions.json')
+          const versionFields = [
+            ['manifest.json', manifest.version],
+            ['package.json', packageJson.version],
+            ['package-lock.json', packageLock.version],
+            ['package-lock.json root package', packageLock.packages?.['']?.version],
+          ]
+
+          for (const [source, version] of versionFields) {
+            if (version !== tag) {
+              fail(`${source} version ${String(version)} does not match tag ${tag}`)
+            }
+          }
+          if (typeof manifest.minAppVersion !== 'string' || !manifest.minAppVersion.trim()) {
+            fail('manifest.json minAppVersion must be a non-empty string')
+          } else if (versions[tag] !== manifest.minAppVersion) {
+            fail(`versions.json[${tag}] must equal manifest minAppVersion ${String(manifest.minAppVersion)}`)
+          }
+
+          const stylesheet = readFileSync('styles.css', 'utf8')
+          const stylesheetVersion = stylesheet.match(/@yolo-version:\s*([^\s*]+)/)?.[1]
+          if (stylesheetVersion !== tag) {
+            fail(`styles.css version banner ${String(stylesheetVersion)} does not match tag ${tag}`)
+          }
+
+          if (process.exitCode) process.exit(process.exitCode)
+          console.log(`Verified OpenYOLO ${tag} release metadata.`)
+          NODE
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Type-check
+        run: npm run type:check
+
+      - name: Lint
+        run: npm run lint:check
+
+      - name: Test with coverage thresholds
+        run: npm run test:coverage
+
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Build production artifacts
+        run: npm run build
+
+      - name: Verify generated release assets
+        run: |
+          git diff --exit-code -- styles.css
+          for asset in main.js manifest.json styles.css; do
+            if [ ! -s "$asset" ]; then
+              echo "::error::Missing or empty release asset: $asset"
+              exit 1
+            fi
+          done
+
+      - name: Upload verified release assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: openyolo-release-assets
+          path: |
+            main.js
+            manifest.json
+            styles.css
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    name: Publish GitHub release
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download verified release assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: openyolo-release-assets
+          path: release-assets
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          for asset in main.js manifest.json styles.css; do
+            if [ ! -s "release-assets/$asset" ]; then
+              echo "::error::Missing or empty downloaded asset: $asset"
+              exit 1
+            fi
+          done
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "::error::A release or draft already exists for $RELEASE_TAG; refusing to overwrite it."
+            exit 1
+          fi
+
+          gh release create "$RELEASE_TAG" \
+            release-assets/main.js \
+            release-assets/manifest.json \
+            release-assets/styles.css \
+            --draft \
+            --verify-tag \
+            --title "OpenYOLO $RELEASE_TAG" \
+            --generate-notes
+          gh release edit "$RELEASE_TAG" --draft=false --latest

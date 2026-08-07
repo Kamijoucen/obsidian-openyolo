@@ -13,6 +13,7 @@ export type YoloSettings = {
   autoApprovePermissions: boolean
   showReasoning: boolean
   debugLog: boolean
+  attachCurrentNote: boolean
   systemPrompt: string
   manageAgentsMd: boolean
   /** 记录用户选择的模型/思考强度等 configOption（configId → value），跨会话与重启恢复 */
@@ -26,8 +27,9 @@ export const DEFAULT_SETTINGS: YoloSettings = {
   autoApprovePermissions: false,
   showReasoning: true,
   debugLog: false,
+  attachCurrentNote: true,
   systemPrompt: DEFAULT_SYSTEM_PROMPT_ZH,
-  manageAgentsMd: true,
+  manageAgentsMd: false,
   savedConfigSelections: {},
 }
 
@@ -65,6 +67,10 @@ export function normalizeSettings(
       typeof source.debugLog === 'boolean'
         ? source.debugLog
         : DEFAULT_SETTINGS.debugLog,
+    attachCurrentNote:
+      typeof source.attachCurrentNote === 'boolean'
+        ? source.attachCurrentNote
+        : DEFAULT_SETTINGS.attachCurrentNote,
     systemPrompt:
       typeof source.systemPrompt === 'string' && source.systemPrompt.trim()
         ? source.systemPrompt

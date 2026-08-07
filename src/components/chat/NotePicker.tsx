@@ -5,6 +5,10 @@ import { useEffect, useMemo, useState } from 'react'
 import { useApp } from '../../contexts/app-context'
 import { useLanguage } from '../../contexts/language-context'
 
+import {
+  MAX_NOTE_PICKER_RESULTS,
+  filterAndSortNoteFiles,
+} from './notePickerSearch'
 import { SelectPopover, usePopover } from './selects'
 
 export type AttachedNote = {
@@ -35,15 +39,13 @@ export function NotePicker({
   }, [open])
 
   const files = useMemo(
-    () =>
-      app.vault.getMarkdownFiles().sort((a, b) => a.path.localeCompare(b.path)),
+    () => (open ? app.vault.getMarkdownFiles() : []),
     [app, open],
   )
-  const visible = useMemo(() => {
-    const keyword = query.trim().toLowerCase()
-    if (!keyword) return files
-    return files.filter((file) => file.path.toLowerCase().includes(keyword))
-  }, [files, query])
+  const visible = useMemo(
+    () => filterAndSortNoteFiles(files, query),
+    [files, query],
+  )
 
   return (
     <div className="yolo-acp-select" ref={containerRef}>
@@ -52,6 +54,9 @@ export function NotePicker({
         className="yolo-chat-user-input-submit-button yolo-chat-user-input-upload-button"
         title={t('chat.attach', 'Add attachment')}
         data-state={open ? 'open' : 'closed'}
+        aria-label={t('chat.attach', 'Add attachment')}
+        aria-haspopup="menu"
+        aria-expanded={open}
         disabled={disabled}
         onClick={() => setOpen(!open)}
       >
@@ -80,12 +85,13 @@ export function NotePicker({
             type="text"
             autoFocus
             placeholder={t('chat.searchNotes', 'Search notes…')}
+            aria-label={t('chat.searchNotes', 'Search notes…')}
             value={query}
             onChange={(event) => setQuery(event.target.value)}
           />
         </div>
         <div className="yolo-model-select-list" role="menu">
-          {visible.map((file) => {
+          {visible.files.map((file) => {
             const parent = file.parent?.path
             return (
               <button
@@ -112,6 +118,14 @@ export function NotePicker({
             )
           })}
         </div>
+        {visible.total > visible.files.length ? (
+          <div className="yolo-acp-note-results-limited" role="status">
+            {t(
+              'chat.noteResultsLimited',
+              `Showing the first ${MAX_NOTE_PICKER_RESULTS} matching notes.`,
+            )}
+          </div>
+        ) : null}
       </SelectPopover>
     </div>
   )

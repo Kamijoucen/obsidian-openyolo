@@ -1,4 +1,4 @@
-import type { App } from 'obsidian'
+import type { App, Vault } from 'obsidian'
 
 export const AGENTS_MD_FILE = 'AGENTS.md'
 export const MANAGED_BLOCK_START = '<!-- openyolo:start -->'
@@ -7,6 +7,23 @@ export const MANAGED_BLOCK_END = '<!-- openyolo:end -->'
 // 旧版 yolo-lite 标记：重命名后仍需识别并迁移为新标记
 const LEGACY_BLOCK_START = '<!-- yolo-lite:start -->'
 const LEGACY_BLOCK_END = '<!-- yolo-lite:end -->'
+
+type MarkerFamily = {
+  start: string
+  end: string
+}
+
+type Span = {
+  start: number
+  end: number
+}
+
+const MARKER_FAMILIES: readonly MarkerFamily[] = [
+  { start: MANAGED_BLOCK_START, end: MANAGED_BLOCK_END },
+  { start: LEGACY_BLOCK_START, end: LEGACY_BLOCK_END },
+]
+
+const syncQueues = new WeakMap<Vault, Promise<void>>()
 
 export type PromptLanguage = 'en' | 'zh'
 
@@ -43,73 +60,189 @@ export function getDefaultSystemPrompt(language: PromptLanguage): string {
   return DEFAULT_SYSTEM_PROMPTS[language]
 }
 
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+function lineEndingFor(document: string): '\n' | '\r\n' {
+  return document.includes('\r\n') ? '\r\n' : '\n'
 }
 
-function blockPattern(): RegExp {
-  const starts = [MANAGED_BLOCK_START, LEGACY_BLOCK_START]
-    .map(escapeRegExp)
-    .join('|')
-  const ends = [MANAGED_BLOCK_END, LEGACY_BLOCK_END].map(escapeRegExp).join('|')
-  return new RegExp(`(?:${starts})[\\s\\S]*?(?:${ends})`)
-}
-
-export function hasManagedBlock(existing: string): boolean {
-  return blockPattern().test(existing)
+function markerAtLine(
+  line: string,
+): { family: number; kind: 'start' | 'end' } | undefined {
+  for (let family = 0; family < MARKER_FAMILIES.length; family += 1) {
+    const markers = MARKER_FAMILIES[family]
+    if (!markers) continue
+    if (line === markers.start) return { family, kind: 'start' }
+    if (line === markers.end) return { family, kind: 'end' }
+  }
+  return undefined
 }
 
 /**
- * Upserts the plugin-managed block inside an AGENTS.md document, preserving
- * any user content outside the managed markers.
+ * Finds complete, same-family marker pairs. Marker text is only structural when
+ * it occupies a whole line, so prose that merely mentions a marker is safe.
+ * Unmatched or cross-family markers are user content and are never consumed.
+ */
+function managedSpans(document: string): Span[] {
+  const stacks = MARKER_FAMILIES.map(() => [] as number[])
+  const spans: Span[] = []
+  let offset = 0
+
+  while (offset < document.length) {
+    const newline = document.indexOf('\n', offset)
+    const rawLineEnd = newline === -1 ? document.length : newline
+    const lineEnd =
+      rawLineEnd > offset && document[rawLineEnd - 1] === '\r'
+        ? rawLineEnd - 1
+        : rawLineEnd
+    const marker = markerAtLine(document.slice(offset, lineEnd))
+
+    if (marker?.kind === 'start') {
+      stacks[marker.family]?.push(offset)
+    } else if (marker) {
+      const start = stacks[marker.family]?.pop()
+      if (start !== undefined) spans.push({ start, end: lineEnd })
+    }
+
+    if (newline === -1) break
+    offset = newline + 1
+  }
+
+  spans.sort((left, right) => left.start - right.start || left.end - right.end)
+  const merged: Span[] = []
+  for (const span of spans) {
+    const previous = merged[merged.length - 1]
+    if (previous && span.start <= previous.end) {
+      previous.end = Math.max(previous.end, span.end)
+    } else {
+      merged.push({ ...span })
+    }
+  }
+  return merged
+}
+
+function sanitizeBlockContent(blockContent: string): string {
+  let safe = blockContent.trim()
+  for (const family of MARKER_FAMILIES) {
+    for (const marker of [family.start, family.end]) {
+      safe = safe.split(marker).join(marker.replace('<!--', '&lt;!--'))
+    }
+  }
+  return safe
+}
+
+function renderManagedBlock(blockContent: string, eol: string): string {
+  return [
+    MANAGED_BLOCK_START,
+    sanitizeBlockContent(blockContent),
+    MANAGED_BLOCK_END,
+  ].join(eol)
+}
+
+function replaceSpans(
+  document: string,
+  spans: readonly Span[],
+  replacement: string,
+): string {
+  let result = ''
+  let cursor = 0
+  for (let index = 0; index < spans.length; index += 1) {
+    const span = spans[index]
+    if (!span) continue
+    result += document.slice(cursor, span.start)
+    if (index === 0) result += replacement
+    cursor = span.end
+  }
+  return result + document.slice(cursor)
+}
+
+export function hasManagedBlock(existing: string): boolean {
+  return managedSpans(existing).length > 0
+}
+
+/**
+ * Upserts one canonical managed block while preserving every byte outside any
+ * complete managed/legacy block. Additional complete blocks are removed.
  */
 export function upsertManagedBlock(
   existing: string,
   blockContent: string,
 ): string {
-  const block = `${MANAGED_BLOCK_START}\n${blockContent.trim()}\n${MANAGED_BLOCK_END}`
-  const pattern = blockPattern()
-  if (pattern.test(existing)) {
-    return existing.replace(pattern, block)
-  }
-  const trimmed = existing.trimEnd()
-  if (!trimmed) {
-    return `${block}\n`
-  }
-  return `${trimmed}\n\n${block}\n`
+  const eol = lineEndingFor(existing)
+  const block = renderManagedBlock(blockContent, eol)
+  const spans = managedSpans(existing)
+  if (spans.length > 0) return replaceSpans(existing, spans, block)
+  if (!existing) return `${block}${eol}`
+
+  const separator = existing.endsWith(`${eol}${eol}`)
+    ? ''
+    : existing.endsWith(eol)
+      ? eol
+      : `${eol}${eol}`
+  return `${existing}${separator}${block}${eol}`
 }
 
-/**
- * Removes the managed block (used when the feature is disabled), collapsing
- * excess blank lines left behind.
- */
+/** Removes every complete managed/legacy block without touching outside bytes. */
 export function removeManagedBlock(existing: string): string {
-  const pattern = new RegExp(`\\n*${blockPattern().source}\\n?`)
-  return existing.replace(pattern, '\n').trim()
+  const spans = managedSpans(existing)
+  return spans.length > 0 ? replaceSpans(existing, spans, '') : existing
+}
+
+function updateAgentsMdDocument(
+  current: string,
+  prompt: string,
+  enabled: boolean,
+): string {
+  return enabled
+    ? upsertManagedBlock(current, prompt)
+    : removeManagedBlock(current)
+}
+
+async function processAgentsMd(
+  vault: Vault,
+  prompt: string,
+  enabled: boolean,
+): Promise<void> {
+  const update = (current: string) =>
+    updateAgentsMdDocument(current, prompt, enabled)
+  const file = vault.getFileByPath(AGENTS_MD_FILE)
+  if (file) {
+    await vault.process(file, update)
+    return
+  }
+
+  const occupiedPath = vault.getAbstractFileByPath(AGENTS_MD_FILE)
+  if (occupiedPath) {
+    throw new Error(`${AGENTS_MD_FILE} exists but is not a file`)
+  }
+
+  const initial = update('')
+  if (!initial) return
+  try {
+    await vault.create(AGENTS_MD_FILE, initial)
+  } catch (error) {
+    // Another writer may have created the file after our lookup. Re-enter via
+    // Vault.process so its latest bytes participate in the atomic transform.
+    const racedFile = vault.getFileByPath(AGENTS_MD_FILE)
+    if (!racedFile) throw error
+    await vault.process(racedFile, update)
+  }
 }
 
 /**
- * Writes (or removes) the plugin-managed block in the vault-root AGENTS.md.
- * opencode picks up AGENTS.md as project rules for every session.
+ * Serializes this plugin's writes per vault and uses Vault.process for existing
+ * files, preventing read-modify-write races with other Obsidian writers.
  */
-export async function syncAgentsMd(
+export function syncAgentsMd(
   app: App,
   prompt: string,
   enabled: boolean,
 ): Promise<void> {
-  const adapter = app.vault.adapter
-  const exists = await adapter.exists(AGENTS_MD_FILE)
-  const current = exists ? await adapter.read(AGENTS_MD_FILE) : ''
-  if (!enabled) {
-    if (!exists || !hasManagedBlock(current)) return
-    const next = removeManagedBlock(current)
-    if (next !== current) {
-      await adapter.write(AGENTS_MD_FILE, next)
-    }
-    return
-  }
-  const next = upsertManagedBlock(current, prompt)
-  if (next !== current) {
-    await adapter.write(AGENTS_MD_FILE, next)
-  }
+  const vault = app.vault
+  const previous = syncQueues.get(vault) ?? Promise.resolve()
+  const current = previous
+    .catch(() => undefined)
+    .then(() => processAgentsMd(vault, prompt, enabled))
+  syncQueues.set(vault, current)
+  return current.finally(() => {
+    if (syncQueues.get(vault) === current) syncQueues.delete(vault)
+  })
 }

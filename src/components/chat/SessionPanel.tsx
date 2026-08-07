@@ -12,7 +12,8 @@ import type { ChatSessionState } from '../../types/chat'
 
 import ChatInput, { AttachedNote, InputImage } from './ChatInput'
 import type { SubmitResult } from './composer'
-import PlanView from './PlanView'
+import { FrameBatcher } from './frameBatcher'
+import TodoPanel from './PlanView'
 import Timeline from './Timeline'
 
 function vaultBasePath(app: App): string {
@@ -85,10 +86,9 @@ function ErrorBanner({ error }: { error: string }) {
 
 type SessionPanelProps = {
   tabId: string
-  isActive: boolean
 }
 
-function SessionPanel({ tabId, isActive }: SessionPanelProps) {
+function SessionPanel({ tabId }: SessionPanelProps) {
   const service = useSessionService()
   const app = useApp()
   const [state, setState] = useState<ChatSessionState | null>(() =>
@@ -97,9 +97,16 @@ function SessionPanel({ tabId, isActive }: SessionPanelProps) {
 
   useEffect(() => {
     setState(service.getState(tabId))
-    return service.subscribe(tabId, (next) => {
-      setState({ ...next, entries: [...next.entries] })
-    })
+    const batcher = new FrameBatcher<ChatSessionState>(
+      window.requestAnimationFrame.bind(window),
+      window.cancelAnimationFrame.bind(window),
+      setState,
+    )
+    const unsubscribe = service.subscribe(tabId, (next) => batcher.push(next))
+    return () => {
+      unsubscribe()
+      batcher.dispose()
+    }
   }, [service, tabId])
 
   const handleSubmit = useCallback(
@@ -140,20 +147,16 @@ function SessionPanel({ tabId, isActive }: SessionPanelProps) {
   )
 
   if (!state) return null
+  const running = ['preparing', 'running', 'cancelling'].includes(state.status)
 
   return (
-    <div
-      className={`yolo-acp-session${isActive ? ' is-active' : ''}`}
-      style={{ display: isActive ? undefined : 'none' }}
-    >
+    <div className="yolo-acp-session is-active">
       <Timeline state={state} onPermissionRespond={handlePermissionRespond} />
       <div className="yolo-chat-footer">
-        {state.plan.length > 0 ? <PlanView entries={state.plan} /> : null}
+        {state.plan.length > 0 ? <TodoPanel entries={state.plan} /> : null}
         {state.error ? <ErrorBanner error={state.error} /> : null}
         <ChatInput
-          running={['preparing', 'running', 'cancelling'].includes(
-            state.status,
-          )}
+          running={running}
           disabled={state.status === 'loading'}
           commands={state.commands}
           mode={state.mode}

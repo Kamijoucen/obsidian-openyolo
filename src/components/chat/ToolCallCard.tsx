@@ -16,6 +16,10 @@ import { useLanguage } from '../../contexts/language-context'
 import type { ToolCallState } from '../../types/chat'
 
 import DiffView from './DiffView'
+import {
+  getSubagentToolDetails,
+  isSubagentRawOutputContent,
+} from './toolCallDetails'
 
 const TEXT_PREVIEW_LIMIT = 4000
 
@@ -66,13 +70,9 @@ function ToolContentItem({ content }: { content: ToolCallContent }) {
   }
   const inner = content.content
   if (inner.type === 'text') {
-    const text =
-      inner.text.length > TEXT_PREVIEW_LIMIT
-        ? `${inner.text.slice(0, TEXT_PREVIEW_LIMIT)}\n…`
-        : inner.text
     return (
       <pre className="yolo-acp-tool-text">
-        <code>{text}</code>
+        <code>{textPreview(inner.text)}</code>
       </pre>
     )
   }
@@ -91,6 +91,12 @@ function ToolContentItem({ content }: { content: ToolCallContent }) {
   return null
 }
 
+function textPreview(text: string): string {
+  return text.length > TEXT_PREVIEW_LIMIT
+    ? `${text.slice(0, TEXT_PREVIEW_LIMIT)}\n…`
+    : text
+}
+
 type ToolCallCardProps = {
   toolCall: ToolCallState
   onPermissionRespond: (toolCallId: string, optionId: string) => void
@@ -99,7 +105,16 @@ type ToolCallCardProps = {
 function ToolCallCard({ toolCall, onPermissionRespond }: ToolCallCardProps) {
   const { t } = useLanguage()
   const [expanded, setExpanded] = useState(false)
-  const hasBody = toolCall.content.length > 0 || toolCall.locations.length > 0
+  const subagent = getSubagentToolDetails(toolCall)
+  const visibleContent = subagent
+    ? toolCall.content.filter(
+        (content) => !isSubagentRawOutputContent(content, subagent),
+      )
+    : toolCall.content
+  const hasBody =
+    visibleContent.length > 0 ||
+    toolCall.locations.length > 0 ||
+    subagent !== null
   const title = toolCall.title || toolCall.kind
 
   return (
@@ -108,6 +123,7 @@ function ToolCallCard({ toolCall, onPermissionRespond }: ToolCallCardProps) {
         <button
           type="button"
           className="yolo-toolcall-header"
+          aria-expanded={hasBody ? expanded : undefined}
           onClick={() => hasBody && setExpanded(!expanded)}
         >
           <span className="yolo-toolcall-header-icon yolo-toolcall-header-icon--status-inline">
@@ -172,7 +188,26 @@ function ToolCallCard({ toolCall, onPermissionRespond }: ToolCallCardProps) {
                 ))}
               </div>
             ) : null}
-            {toolCall.content.map((content, index) => (
+            {subagent?.state === 'running' ? (
+              <div className="yolo-acp-subagent-running" role="status">
+                <Loader2
+                  size={13}
+                  className="yolo-spinner"
+                  aria-hidden="true"
+                />
+                {t('chat.subagentRunning', 'Subagent is running.')}
+              </div>
+            ) : subagent?.output ? (
+              <section className="yolo-acp-subagent-result">
+                <div className="yolo-acp-subagent-result-title">
+                  {t('chat.subagentOutput', 'Subagent output')}
+                </div>
+                <pre className="yolo-acp-tool-text">
+                  <code>{subagent.output}</code>
+                </pre>
+              </section>
+            ) : null}
+            {visibleContent.map((content, index) => (
               <ToolContentItem key={index} content={content} />
             ))}
           </div>

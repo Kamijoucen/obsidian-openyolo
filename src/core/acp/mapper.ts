@@ -16,6 +16,8 @@ import type {
   ToolCallState,
 } from '../../types/chat'
 
+import { parseTodoEntries, parseTodoToolCall } from './todos'
+
 let entrySeq = 0
 function nextEntryId(): string {
   entrySeq += 1
@@ -25,6 +27,10 @@ function nextEntryId(): string {
 function textOfContent(content: ContentBlock): string {
   if (content.type === 'text') return content.text
   return ''
+}
+
+function nonTextBlocks(blocks: readonly ContentBlock[]): ContentBlock[] {
+  return blocks.filter((block) => block.type !== 'text')
 }
 
 /**
@@ -67,6 +73,16 @@ export class SessionStateStore {
   private assistantEntryByMessageId = new Map<string, string>()
   private userEntryByMessageId = new Map<string, string>()
   private toolEntryByCallId = new Map<string, string>()
+  private confirmedTodoPlan: ChatSessionState['plan'] = []
+  private optimisticTodoPlans = new Map<
+    string,
+    { plan: ChatSessionState['plan']; revision: number }
+  >()
+  private todoCallRevisionById = new Map<string, number>()
+  private todoPlanRevision = 0
+  private latestConfirmedTodoRevision = 0
+  private fallbackAssistantEntryId: string | null = null
+  private fallbackUserEntryId: string | null = null
 
   constructor(title: string) {
     this.state = createInitialSessionState(title)
@@ -98,6 +114,13 @@ export class SessionStateStore {
     this.assistantEntryByMessageId.clear()
     this.userEntryByMessageId.clear()
     this.toolEntryByCallId.clear()
+    this.confirmedTodoPlan = []
+    this.optimisticTodoPlans.clear()
+    this.todoCallRevisionById.clear()
+    this.todoPlanRevision = 0
+    this.latestConfirmedTodoRevision = 0
+    this.fallbackAssistantEntryId = null
+    this.fallbackUserEntryId = null
     this.state = {
       ...createInitialSessionState(title),
       sessionId,
@@ -143,19 +166,23 @@ export class SessionStateStore {
   }
 
   appendLocalUserMessage(text: string, blocks: ContentBlock[]) {
+    this.fallbackAssistantEntryId = null
+    this.fallbackUserEntryId = null
     const entry: ChatUserEntry = {
       kind: 'user',
       id: nextEntryId(),
       messageId: null,
       timestamp: Date.now(),
       text,
-      blocks,
+      blocks: nonTextBlocks(blocks),
     }
     this.state = { ...this.state, entries: [...this.state.entries, entry] }
     this.emit()
   }
 
   markRunning() {
+    this.fallbackAssistantEntryId = null
+    this.fallbackUserEntryId = null
     this.state = {
       ...this.state,
       status: 'running',
@@ -181,6 +208,19 @@ export class SessionStateStore {
   }
 
   markTurnEnd(stopReason: StopReason | null) {
+    this.fallbackAssistantEntryId = null
+    this.fallbackUserEntryId = null
+    // Retire every Todo call observed in the finished turn. ACP updates can
+    // arrive after cancellation, so preserving their original revisions keeps
+    // a late completion from reviving an abandoned optimistic plan.
+    this.latestConfirmedTodoRevision = Math.max(
+      this.latestConfirmedTodoRevision,
+      this.todoPlanRevision,
+    )
+    if (this.optimisticTodoPlans.size > 0) {
+      this.optimisticTodoPlans.clear()
+      this.renderCurrentTodoPlan()
+    }
     const entries = this.state.entries.map((entry) =>
       entry.kind === 'assistant' && entry.streaming
         ? { ...entry, streaming: false }
@@ -199,21 +239,26 @@ export class SessionStateStore {
   applyUpdate(update: SessionUpdate) {
     switch (update.sessionUpdate) {
       case 'user_message_chunk':
-        this.applyUserChunk(update.messageId ?? '', update.content)
+        this.applyUserChunk(update.messageId ?? null, update.content)
         break
       case 'agent_message_chunk':
         this.markResponseStarted()
-        this.applyAssistantChunk(update.messageId ?? '', update.content, false)
+        this.applyAssistantChunk(
+          update.messageId ?? null,
+          update.content,
+          false,
+        )
         break
       case 'agent_thought_chunk':
         this.markResponseStarted()
-        this.applyAssistantChunk(update.messageId ?? '', update.content, true)
+        this.applyAssistantChunk(update.messageId ?? null, update.content, true)
         break
       case 'tool_call':
         this.markResponseStarted()
         this.upsertToolCall({
           toolCallId: update.toolCallId,
           title: update.title,
+          name: update.name,
           kind: update.kind,
           status: update.status,
           content: update.content,
@@ -228,7 +273,14 @@ export class SessionStateStore {
         break
       case 'plan':
         this.markResponseStarted()
-        this.state = { ...this.state, plan: update.entries }
+        this.confirmedTodoPlan = parseTodoEntries(update.entries) ?? []
+        this.todoPlanRevision += 1
+        this.latestConfirmedTodoRevision = this.todoPlanRevision
+        this.optimisticTodoPlans.clear()
+        this.state = {
+          ...this.state,
+          plan: this.confirmedTodoPlan,
+        }
         break
       case 'usage_update':
         this.state = {
@@ -261,12 +313,21 @@ export class SessionStateStore {
   }
 
   private markResponseStarted() {
+    // ACP v1 chunks do not carry messageId. Any agent-side activity closes the
+    // fallback user message so a later replayed user chunk starts a new turn.
+    this.fallbackUserEntryId = null
     if (!this.state.awaitingResponse) return
     this.state = { ...this.state, awaitingResponse: false }
   }
 
   setPendingPermission(toolCall: ToolCallUpdate, options: PermissionOption[]) {
-    this.upsertToolCall({ ...toolCall, status: toolCall.status ?? 'pending' })
+    // Permission requests may contain only a toolCallId. Withdraw by identity
+    // before merging so a partial request still hides an existing Todo plan.
+    this.discardOptimisticTodoPlan(toolCall.toolCallId)
+    this.upsertToolCall(
+      { ...toolCall, status: toolCall.status ?? 'pending' },
+      false,
+    )
     this.replaceToolEntry(toolCall.toolCallId, (entry) => ({
       ...entry,
       toolCall: { ...entry.toolCall, permission: { options } },
@@ -301,9 +362,14 @@ export class SessionStateStore {
     }
   }
 
-  private applyUserChunk(messageId: string, content: ContentBlock) {
+  private applyUserChunk(messageId: string | null, content: ContentBlock) {
     if (isSyntheticContent(content)) return
-    const existingId = this.userEntryByMessageId.get(messageId)
+    // A replayed user message is also the boundary between two v1 assistant
+    // messages when neither side supplies messageId.
+    this.fallbackAssistantEntryId = null
+    const existingId = messageId
+      ? this.userEntryByMessageId.get(messageId)
+      : this.fallbackUserEntryId
     if (existingId) {
       this.state = {
         ...this.state,
@@ -312,7 +378,10 @@ export class SessionStateStore {
             ? {
                 ...item,
                 text: item.text + textOfContent(content),
-                blocks: [...item.blocks, content],
+                blocks:
+                  content.type === 'text'
+                    ? item.blocks
+                    : [...item.blocks, content],
               }
             : item,
         ),
@@ -325,19 +394,22 @@ export class SessionStateStore {
       messageId,
       timestamp: Date.now(),
       text: textOfContent(content),
-      blocks: [content],
+      blocks: content.type === 'text' ? [] : [content],
     }
-    this.userEntryByMessageId.set(messageId, entry.id)
+    if (messageId) this.userEntryByMessageId.set(messageId, entry.id)
+    else this.fallbackUserEntryId = entry.id
     this.state = { ...this.state, entries: [...this.state.entries, entry] }
   }
 
   private applyAssistantChunk(
-    messageId: string,
+    messageId: string | null,
     content: ContentBlock,
     isThought: boolean,
   ) {
     if (isSyntheticContent(content)) return
-    const existingId = this.assistantEntryByMessageId.get(messageId)
+    const existingId = messageId
+      ? this.assistantEntryByMessageId.get(messageId)
+      : this.fallbackAssistantEntryId
     if (existingId) {
       this.state = {
         ...this.state,
@@ -351,69 +423,146 @@ export class SessionStateStore {
                 reasoning: isThought
                   ? item.reasoning + textOfContent(content)
                   : item.reasoning,
+                blocks:
+                  isThought || content.type === 'text'
+                    ? item.blocks
+                    : [...item.blocks, content],
               }
             : item,
         ),
       }
       return
     }
+    const entryId = nextEntryId()
     const entry: ChatAssistantEntry = {
       kind: 'assistant',
-      id: nextEntryId(),
-      messageId,
+      id: entryId,
+      // ChatAssistantEntry historically exposes a string id. For v1 chunks,
+      // the local entry id is a stable per-message surrogate.
+      messageId: messageId ?? entryId,
       timestamp: Date.now(),
       text: isThought ? '' : textOfContent(content),
       reasoning: isThought ? textOfContent(content) : '',
+      blocks: isThought || content.type === 'text' ? [] : [content],
       streaming: true,
     }
-    this.assistantEntryByMessageId.set(messageId, entry.id)
+    if (messageId) this.assistantEntryByMessageId.set(messageId, entry.id)
+    else this.fallbackAssistantEntryId = entry.id
     this.state = { ...this.state, entries: [...this.state.entries, entry] }
   }
 
-  private upsertToolCall(update: ToolCallUpdate) {
+  private upsertToolCall(update: ToolCallUpdate, applyTodoPlan = true) {
+    // ACP permits partial tool updates that reveal their kind only later. Give
+    // every call a stable revision up front so turn-end retirement also covers
+    // a late completion that is first identified as TodoWrite.
+    this.ensureTodoCallRevision(update.toolCallId)
     const existing = this.findToolEntry(update.toolCallId)
-    if (existing) {
-      this.replaceToolEntry(update.toolCallId, (entry) => {
-        const prev = entry.toolCall
-        return {
-          ...entry,
-          toolCall: {
-            ...prev,
-            title: update.title ?? prev.title,
-            kind: update.kind ?? prev.kind,
-            status: update.status ?? prev.status,
-            content: update.content ?? prev.content,
-            locations: update.locations ?? prev.locations,
-            rawInput:
-              update.rawInput !== undefined ? update.rawInput : prev.rawInput,
-            rawOutput:
-              update.rawOutput !== undefined
-                ? update.rawOutput
-                : prev.rawOutput,
-          },
-        }
-      })
-      return
+    if (!existing) {
+      // ACP v1 has no message ids. A newly inserted tool is therefore the
+      // only reliable boundary between assistant text before and after it.
+      this.fallbackAssistantEntryId = null
     }
-    const toolCall: ToolCallState = {
+    const previous = existing?.toolCall
+    const merged: ToolCallState = {
       toolCallId: update.toolCallId,
-      title: update.title ?? '',
-      kind: update.kind ?? 'other',
-      status: update.status ?? 'pending',
-      content: update.content ?? [],
-      locations: update.locations ?? [],
-      rawInput: update.rawInput,
-      rawOutput: update.rawOutput,
-      permission: null,
+      title: update.title ?? previous?.title ?? '',
+      name: update.name ?? previous?.name,
+      kind: update.kind ?? previous?.kind ?? 'other',
+      status: update.status ?? previous?.status ?? 'pending',
+      content: update.content ?? previous?.content ?? [],
+      locations: update.locations ?? previous?.locations ?? [],
+      rawInput:
+        update.rawInput !== undefined ? update.rawInput : previous?.rawInput,
+      rawOutput:
+        update.rawOutput !== undefined ? update.rawOutput : previous?.rawOutput,
+      permission: previous?.permission ?? null,
+    }
+
+    const parsedTodo =
+      applyTodoPlan && merged.permission === null
+        ? parseTodoToolCall(merged)
+        : null
+    if (parsedTodo) {
+      this.applyTodoToolPlan(merged, parsedTodo.entries)
+    }
+
+    if (existing) {
+      this.replaceToolEntry(update.toolCallId, (entry) => ({
+        ...entry,
+        toolCall: merged,
+      }))
+      return
     }
     const entry: ChatToolEntry = {
       kind: 'tool',
       id: nextEntryId(),
       timestamp: Date.now(),
-      toolCall,
+      toolCall: merged,
     }
     this.toolEntryByCallId.set(update.toolCallId, entry.id)
     this.state = { ...this.state, entries: [...this.state.entries, entry] }
+  }
+
+  private applyTodoToolPlan(
+    toolCall: ToolCallState,
+    plan: ChatSessionState['plan'],
+  ) {
+    const { toolCallId, status } = toolCall
+    if (status === 'failed') {
+      this.discardOptimisticTodoPlan(toolCallId)
+      return
+    }
+
+    if (status === 'pending' || status === 'in_progress') {
+      const revision = this.ensureTodoCallRevision(toolCallId)
+      if (revision <= this.latestConfirmedTodoRevision) return
+      this.optimisticTodoPlans.set(toolCallId, {
+        plan,
+        revision,
+      })
+      this.renderCurrentTodoPlan()
+      return
+    }
+
+    if (status === 'completed') {
+      const completedRevision = this.ensureTodoCallRevision(toolCallId)
+      if (completedRevision > this.latestConfirmedTodoRevision) {
+        this.confirmedTodoPlan = plan
+        this.latestConfirmedTodoRevision = completedRevision
+      }
+      for (const [candidateId, candidate] of this.optimisticTodoPlans) {
+        if (candidate.revision > this.latestConfirmedTodoRevision) continue
+        this.optimisticTodoPlans.delete(candidateId)
+      }
+      this.renderCurrentTodoPlan()
+      return
+    }
+
+    this.state = { ...this.state, plan }
+  }
+
+  private ensureTodoCallRevision(toolCallId: string): number {
+    const existing = this.todoCallRevisionById.get(toolCallId)
+    if (existing !== undefined) return existing
+    this.todoPlanRevision += 1
+    this.todoCallRevisionById.set(toolCallId, this.todoPlanRevision)
+    return this.todoPlanRevision
+  }
+
+  private discardOptimisticTodoPlan(toolCallId: string) {
+    const removed = this.optimisticTodoPlans.delete(toolCallId)
+    if (removed) this.renderCurrentTodoPlan()
+  }
+
+  private renderCurrentTodoPlan() {
+    let latest: { plan: ChatSessionState['plan']; revision: number } | undefined
+    for (const candidate of this.optimisticTodoPlans.values()) {
+      if (!latest || candidate.revision > latest.revision) latest = candidate
+    }
+    this.state = {
+      ...this.state,
+      plan: latest?.plan ?? this.confirmedTodoPlan,
+    }
   }
 
   private findToolEntry(toolCallId: string): ChatToolEntry | null {

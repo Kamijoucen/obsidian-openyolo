@@ -5,10 +5,12 @@ import { getDefaultSystemPrompt } from '../core/acp/agentsMd'
 import { getUiLanguage, t } from '../i18n'
 import type YoloPlugin from '../main'
 
+import { PromptDraftController } from './promptDraft'
 import type { YoloSettings } from './schema/setting.types'
 
 export class YoloSettingTab extends PluginSettingTab {
   private unsubscribeAvailabilityChange: (() => void) | null
+  private readonly promptDraft: PromptDraftController
 
   constructor(
     app: App,
@@ -18,9 +20,25 @@ export class YoloSettingTab extends PluginSettingTab {
     this.unsubscribeAvailabilityChange = this.plugin
       .getSessionService()
       .onAvailabilityChange(() => this.update())
+    this.promptDraft = new PromptDraftController(
+      600,
+      async (value) => {
+        const defaultSystemPrompt = getDefaultSystemPrompt(getUiLanguage())
+        await this.plugin.saveSettings({
+          ...this.plugin.settings,
+          systemPrompt: value.trim() || defaultSystemPrompt,
+        })
+      },
+      (error) => console.warn('[openyolo] failed to save system prompt', error),
+    )
   }
 
   dispose(): void {
+    void this.promptDraft
+      .flush()
+      .catch((error) =>
+        console.warn('[openyolo] failed to flush system prompt', error),
+      )
     const unsubscribe = this.unsubscribeAvailabilityChange
     this.unsubscribeAvailabilityChange = null
     unsubscribe?.()
@@ -71,6 +89,11 @@ export class YoloSettingTab extends PluginSettingTab {
         type: 'group',
         heading: t('settings.behavior'),
         items: [
+          {
+            name: t('settings.attachCurrentNote'),
+            desc: t('settings.attachCurrentNoteDesc'),
+            control: { type: 'toggle', key: 'attachCurrentNote' },
+          },
           {
             name: t('settings.manageAgentsMd'),
             desc: t('settings.manageAgentsMdDesc'),
@@ -138,6 +161,7 @@ export class YoloSettingTab extends PluginSettingTab {
         break
       }
       case 'manageAgentsMd':
+      case 'attachCurrentNote':
       case 'autoApprovePermissions':
       case 'showReasoning':
       case 'debugLog':
@@ -151,7 +175,6 @@ export class YoloSettingTab extends PluginSettingTab {
 
   private renderSystemPrompt(setting: Setting): () => void {
     const defaultSystemPrompt = getDefaultSystemPrompt(getUiLanguage())
-    let promptSaveTimer: number | null = null
 
     setting.settingEl.addClass('yolo-settings-prompt-setting')
     setting.addExtraButton((button) =>
@@ -159,7 +182,7 @@ export class YoloSettingTab extends PluginSettingTab {
         .setIcon('reset')
         .setTooltip(t('settings.resetPrompt'))
         .onClick(async () => {
-          if (promptSaveTimer) window.clearTimeout(promptSaveTimer)
+          this.promptDraft.discard()
           await this.plugin.saveSettings({
             ...this.plugin.settings,
             systemPrompt: defaultSystemPrompt,
@@ -171,21 +194,19 @@ export class YoloSettingTab extends PluginSettingTab {
     const promptArea = setting.controlEl.createEl('textarea', {
       cls: 'yolo-settings-prompt-textarea',
     })
-    promptArea.value = this.plugin.settings.systemPrompt
+    promptArea.value = this.promptDraft.value(this.plugin.settings.systemPrompt)
     promptArea.rows = 12
     promptArea.spellcheck = false
     promptArea.addEventListener('input', () => {
-      if (promptSaveTimer) window.clearTimeout(promptSaveTimer)
-      promptSaveTimer = window.setTimeout(() => {
-        void this.plugin.saveSettings({
-          ...this.plugin.settings,
-          systemPrompt: promptArea.value.trim() || defaultSystemPrompt,
-        })
-      }, 600)
+      this.promptDraft.set(promptArea.value)
     })
 
     return () => {
-      if (promptSaveTimer) window.clearTimeout(promptSaveTimer)
+      void this.promptDraft
+        .flush()
+        .catch((error) =>
+          console.warn('[openyolo] failed to flush system prompt', error),
+        )
     }
   }
 }

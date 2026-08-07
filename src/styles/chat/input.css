@@ -562,6 +562,8 @@ body.is-mobile .yolo-chat-container--mobile-keyboard-managed {
   line-height: var(--line-height-normal);
   pointer-events: none;
   min-height: unset;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .yolo-chat-user-input-wrapper--compact .yolo-obsidian-textarea,

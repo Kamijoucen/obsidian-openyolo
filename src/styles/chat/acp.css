@@ -371,6 +371,27 @@ button.yolo-assistant-message-metadata-toggle:hover {
   border-radius: 6px;
 }
 
+.yolo-acp-subagent-result {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.yolo-acp-subagent-result-title {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-medium);
+}
+
+.yolo-acp-subagent-running {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.4;
+}
+
 /* 权限审批 */
 
 .yolo-acp-permission {
@@ -603,6 +624,18 @@ button.yolo-chat-user-input-submit-button-circle.is-stop {
   justify-content: center;
   padding: 0;
 }
+
+.yolo-acp-note-chip__remove:focus-visible,
+.yolo-acp-input-image-remove:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 1px;
+}
+
+.yolo-acp-attachment-error {
+  color: var(--text-error);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.4;
+}
 /* 选择器弹层（portal 到 body，向上弹出，位置由 JS 计算） */
 
 .yolo-acp-select {
@@ -630,6 +663,14 @@ button.yolo-chat-user-input-submit-button-circle.is-stop {
 
 .yolo-acp-select-search input {
   width: 100%;
+}
+
+.yolo-acp-note-results-limited {
+  flex-shrink: 0;
+  padding: var(--size-2-2) var(--size-4-2);
+  border-top: 1px solid var(--background-modifier-border);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
 }
 /* 斜杠命令弹层 */
 

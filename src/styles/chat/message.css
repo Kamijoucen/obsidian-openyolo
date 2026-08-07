@@ -429,3 +429,28 @@
   ) {
   font-family: var(--yolo-chat-response-font-family);
 }
+.yolo-acp-assistant-content-blocks {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-2);
+  margin-top: var(--size-4-2);
+}
+
+.yolo-acp-assistant-image {
+  display: block;
+  max-width: min(100%, 32rem);
+  max-height: 24rem;
+  border-radius: var(--radius-s);
+  object-fit: contain;
+}
+
+.yolo-acp-assistant-audio {
+  max-width: 100%;
+}
+
+.yolo-acp-assistant-resource > pre {
+  max-height: 20rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

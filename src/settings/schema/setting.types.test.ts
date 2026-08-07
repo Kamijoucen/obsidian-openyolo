@@ -8,10 +8,31 @@ import { normalizeSettings } from './setting.types'
 describe('normalizeSettings system prompt language', () => {
   it('uses the current language for a fresh configuration', () => {
     expect(normalizeSettings(undefined, 'en')).toMatchObject({
+      attachCurrentNote: true,
+      manageAgentsMd: false,
       systemPrompt: DEFAULT_SYSTEM_PROMPT_EN,
     })
     expect(normalizeSettings(undefined, 'zh')).toMatchObject({
+      manageAgentsMd: false,
       systemPrompt: DEFAULT_SYSTEM_PROMPT_ZH,
+    })
+  })
+
+  it('normalizes the current-note attachment preference', () => {
+    expect(normalizeSettings({ attachCurrentNote: false })).toMatchObject({
+      attachCurrentNote: false,
+    })
+    expect(normalizeSettings({ attachCurrentNote: 'invalid' })).toMatchObject({
+      attachCurrentNote: true,
+    })
+  })
+
+  it('keeps AGENTS.md management opt-in while preserving an existing choice', () => {
+    expect(normalizeSettings({ manageAgentsMd: true }, 'en')).toMatchObject({
+      manageAgentsMd: true,
+    })
+    expect(normalizeSettings({ manageAgentsMd: false }, 'en')).toMatchObject({
+      manageAgentsMd: false,
     })
   })
 

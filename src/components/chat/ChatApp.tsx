@@ -1,5 +1,7 @@
+import { Notice } from 'obsidian'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
+import { useLanguage } from '../../contexts/language-context'
 import { useSessionService } from '../../contexts/service-context'
 import type { AvailabilityState } from '../../core/acp/service'
 import type { HistorySessionInfo } from '../../types/chat'
@@ -14,6 +16,7 @@ type ChatAppProps = {
 
 export default function ChatApp({ onOpenSettings }: ChatAppProps) {
   const service = useSessionService()
+  const { t } = useLanguage()
   const [tabId, setTabId] = useState<string | null>(null)
   const activeTabRef = useRef<string | null>(null)
   const targetSessionRef = useRef<string | null>(null)
@@ -27,6 +30,50 @@ export default function ChatApp({ onOpenSettings }: ChatAppProps) {
     return service.onAvailabilityChange(setAvailability)
   }, [service])
 
+  const closeTabsExcept = useCallback(
+    (activeTabId: string) => {
+      for (const tab of service.listTabs()) {
+        if (tab.tabId !== activeTabId) void service.closeTab(tab.tabId)
+      }
+    },
+    [service],
+  )
+
+  const activateSingleTab = useCallback(
+    (nextTabId: string) => {
+      activeTabRef.current = nextTabId
+      targetSessionRef.current = service.getState(nextTabId)?.sessionId ?? null
+      setTabId(nextTabId)
+      closeTabsExcept(nextTabId)
+    },
+    [closeTabsExcept, service],
+  )
+
+  const closeStaleLoadedTab = useCallback(
+    (
+      loadedTabId: string,
+      existingTabIds: ReadonlySet<string>,
+      preserveLatestTarget = true,
+    ) => {
+      if (
+        existingTabIds.has(loadedTabId) ||
+        loadedTabId === activeTabRef.current
+      ) {
+        return
+      }
+      const loadedSessionId = service.getState(loadedTabId)?.sessionId ?? null
+      if (
+        preserveLatestTarget &&
+        loadedSessionId !== null &&
+        loadedSessionId === targetSessionRef.current
+      ) {
+        return
+      }
+      void service.closeTab(loadedTabId)
+    },
+    [service],
+  )
+
   useEffect(() => {
     mountedRef.current = true
     return () => {
@@ -39,42 +86,34 @@ export default function ChatApp({ onOpenSettings }: ChatAppProps) {
     let cancelled = false
     const existing = service.listTabs()
     if (existing.length > 0) {
-      if (!activeTabRef.current) {
-        activeTabRef.current = existing[0].tabId
-        targetSessionRef.current =
-          service.getState(existing[0].tabId)?.sessionId ?? null
-        setTabId(existing[0].tabId)
-      }
+      activateSingleTab(existing[0].tabId)
       return
     }
     // Defer spawning opencode until after the current restore/paint cycle so
     // app startup isn't competing with the ACP subprocess boot.
     const timer = window.setTimeout(() => {
       const sequence = ++switchSequenceRef.current
+      const existingTabIds = new Set(service.listTabs().map((tab) => tab.tabId))
       void service
         .openMostRecentTab()
         .then((id) => {
-          if (cancelled) return
-          if (sequence !== switchSequenceRef.current) {
-            const sessionId = service.getState(id)?.sessionId ?? null
-            if (
-              id !== activeTabRef.current &&
-              (sessionId === null || sessionId !== targetSessionRef.current)
-            ) {
-              void service.closeTab(id)
-            }
+          if (cancelled) {
+            closeStaleLoadedTab(id, existingTabIds, false)
             return
           }
-          activeTabRef.current = id
-          targetSessionRef.current = service.getState(id)?.sessionId ?? null
-          setTabId(id)
+          if (sequence !== switchSequenceRef.current) {
+            closeStaleLoadedTab(id, existingTabIds)
+            return
+          }
+          activateSingleTab(id)
         })
         .catch(() => {
-          if (!cancelled && sequence === switchSequenceRef.current) {
-            const id = service.createTab()
-            activeTabRef.current = id
-            targetSessionRef.current = null
-            setTabId(id)
+          if (
+            !cancelled &&
+            sequence === switchSequenceRef.current &&
+            activeTabRef.current === null
+          ) {
+            activateSingleTab(service.createTab())
           }
         })
     }, 0)
@@ -82,45 +121,44 @@ export default function ChatApp({ onOpenSettings }: ChatAppProps) {
       cancelled = true
       window.clearTimeout(timer)
     }
-  }, [service])
+  }, [activateSingleTab, closeStaleLoadedTab, service])
 
   const handleNew = useCallback(() => {
     switchSequenceRef.current += 1
     targetSessionRef.current = null
-    const previous = activeTabRef.current
-    const next = service.createTab()
-    activeTabRef.current = next
-    setTabId(next)
-    if (previous && previous !== next) void service.closeTab(previous)
-  }, [service])
+    activateSingleTab(service.createTab())
+  }, [activateSingleTab, service])
 
   const handleOpenHistory = useCallback(
     (session: HistorySessionInfo) => {
       const sequence = ++switchSequenceRef.current
       targetSessionRef.current = session.sessionId
+      const existingTabIds = new Set(service.listTabs().map((tab) => tab.tabId))
       void service
         .openHistoryTab(session.sessionId, session.title)
         .then((id) => {
-          if (!mountedRef.current) return
-          if (sequence !== switchSequenceRef.current) {
-            const openedSessionId = service.getState(id)?.sessionId ?? null
-            if (
-              id !== activeTabRef.current &&
-              (openedSessionId === null ||
-                openedSessionId !== targetSessionRef.current)
-            ) {
-              void service.closeTab(id)
-            }
+          if (!mountedRef.current) {
+            closeStaleLoadedTab(id, existingTabIds, false)
             return
           }
-          const previous = activeTabRef.current
-          activeTabRef.current = id
-          setTabId(id)
-          if (previous && previous !== id) void service.closeTab(previous)
+          if (sequence !== switchSequenceRef.current) {
+            closeStaleLoadedTab(id, existingTabIds)
+            return
+          }
+          activateSingleTab(id)
         })
-        .catch(() => undefined)
+        .catch(() => {
+          if (mountedRef.current && sequence === switchSequenceRef.current) {
+            targetSessionRef.current = activeTabRef.current
+              ? (service.getState(activeTabRef.current)?.sessionId ?? null)
+              : null
+            new Notice(
+              t('chat.historyLoadFailed', 'Could not load chat history.'),
+            )
+          }
+        })
     },
-    [service],
+    [activateSingleTab, closeStaleLoadedTab, service, t],
   )
 
   return (
@@ -134,7 +172,7 @@ export default function ChatApp({ onOpenSettings }: ChatAppProps) {
         availability={availability}
         onOpenSettings={onOpenSettings}
       />
-      {tabId ? <SessionPanel key={tabId} tabId={tabId} isActive /> : null}
+      {tabId ? <SessionPanel key={tabId} tabId={tabId} /> : null}
     </div>
   )
 }

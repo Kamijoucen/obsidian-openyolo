@@ -13,9 +13,8 @@ import { resolveOpencodeBinary, spawnOpencodeAcp } from './process'
 import type { SpawnedProcess } from './process'
 import { nodeReadableToWeb, nodeWritableToWeb } from './streams'
 import { cancelTimeout, scheduleTimeout } from './timers'
-import type { TimerHandle } from './timers'
 
-const INITIALIZE_TIMEOUT_MS = 30_000
+const STARTUP_TIMEOUT_MS = 30_000
 const PROCESS_EXIT_GRACE_MS = 2_000
 const PROCESS_KILL_GRACE_MS = 1_000
 
@@ -97,28 +96,40 @@ async function stopProcess(child: SpawnedProcess): Promise<void> {
   child.kill('SIGTERM')
   if (await waitForProcessExit(child, PROCESS_KILL_GRACE_MS)) return
   child.kill('SIGKILL')
-  await child.exited
+  // A broken process adapter must not make plugin unload wait forever. The
+  // operating system has already received the strongest termination signal;
+  // bound the final join just like the earlier shutdown phases.
+  await waitForProcessExit(child, PROCESS_KILL_GRACE_MS)
 }
 
-async function withRequestTimeout<T>(
-  operation: string,
-  timeoutMs: number,
-  request: (signal: AbortSignal) => Promise<T>,
+function signalError(signal: AbortSignal, fallback: string): Error {
+  if (signal.reason instanceof Error) return signal.reason
+  return new Error(typeof signal.reason === 'string' ? signal.reason : fallback)
+}
+
+function raceWithSignal<T>(
+  pending: Promise<T>,
+  signal: AbortSignal,
 ): Promise<T> {
-  const controller = new AbortController()
-  let timer: TimerHandle | null = null
-  const timeout = new Promise<never>((_, reject) => {
-    timer = scheduleTimeout(() => {
-      const error = new AcpTimeoutError(operation)
-      controller.abort(error)
-      reject(error)
-    }, timeoutMs)
-  })
-  try {
-    return await Promise.race([request(controller.signal), timeout])
-  } finally {
-    if (timer !== null) cancelTimeout(timer)
+  if (signal.aborted) {
+    return Promise.reject(signalError(signal, 'ACP startup cancelled'))
   }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      reject(signalError(signal, 'ACP startup cancelled'))
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    void pending.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort)
+        resolve(value)
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', onAbort)
+        reject(error instanceof Error ? error : new Error(String(error)))
+      },
+    )
+  })
 }
 
 export class AcpClient implements AcpClientPort {
@@ -131,6 +142,7 @@ export class AcpClient implements AcpClientPort {
   private disposePromise: Promise<void> | null = null
   private processStopPromise: Promise<void> | null = null
   private connectPromise: Promise<void> | null = null
+  private connectController: AbortController | null = null
 
   constructor(private readonly options: AcpClientOptions) {}
 
@@ -157,28 +169,54 @@ export class AcpClient implements AcpClientPort {
       throw new Error('ACP client is already connecting')
     }
 
-    const connecting = this.connectInternal(hooks)
+    const controller = new AbortController()
+    this.connectController = controller
+    const timer = scheduleTimeout(() => {
+      controller.abort(new AcpTimeoutError('ACP startup'))
+    }, STARTUP_TIMEOUT_MS)
+    const connecting = this.connectInternal(hooks, controller.signal)
     this.connectPromise = connecting
     try {
       await connecting
     } finally {
+      cancelTimeout(timer)
+      if (this.connectController === controller) {
+        this.connectController = null
+      }
       if (this.connectPromise === connecting) this.connectPromise = null
     }
   }
 
-  private async connectInternal(hooks: AcpClientHooks): Promise<void> {
+  private async connectInternal(
+    hooks: AcpClientHooks,
+    signal: AbortSignal,
+  ): Promise<void> {
     try {
-      const binary = await resolveOpencodeBinary(this.options.configuredPath)
+      const binary = await raceWithSignal(
+        resolveOpencodeBinary(this.options.configuredPath),
+        signal,
+      )
       if (!binary) throw new OpencodeNotFoundError()
-      if (this.disposed)
+      if (this.disposed || signal.aborted)
         throw new Error('ACP client was disposed while starting')
 
-      const child = await spawnOpencodeAcp({
+      const spawning = spawnOpencodeAcp({
         binary,
         args: this.options.extraArgs,
         cwd: this.options.cwd,
       })
-      if (this.disposed) {
+      // If a spawn implementation ignores cancellation and resolves late,
+      // clean up that child without keeping dispose() blocked on it.
+      void spawning.then(
+        (lateChild) => {
+          if (this.disposed || signal.aborted) {
+            void this.stopChild(lateChild)
+          }
+        },
+        () => undefined,
+      )
+      const child = await raceWithSignal(spawning, signal)
+      if (this.disposed || signal.aborted) {
         await this.stopChild(child)
         throw new Error('ACP client was disposed while starting')
       }
@@ -280,25 +318,23 @@ export class AcpClient implements AcpClientPort {
         }
       })
 
-      const initResponse = await withRequestTimeout(
-        'ACP initialize',
-        INITIALIZE_TIMEOUT_MS,
-        (signal) =>
-          connection.agent.request(
-            'initialize',
-            {
-              protocolVersion: acp.PROTOCOL_VERSION,
-              clientCapabilities: {
-                fs: { readTextFile: true, writeTextFile: true },
-                terminal: false,
-              },
-              clientInfo: {
-                name: this.options.clientName,
-                version: this.options.clientVersion,
-              },
+      const initResponse = await raceWithSignal(
+        connection.agent.request(
+          'initialize',
+          {
+            protocolVersion: acp.PROTOCOL_VERSION,
+            clientCapabilities: {
+              fs: { readTextFile: true, writeTextFile: true },
+              terminal: false,
             },
-            { cancellationSignal: signal },
-          ),
+            clientInfo: {
+              name: this.options.clientName,
+              version: this.options.clientVersion,
+            },
+          },
+          { cancellationSignal: signal },
+        ),
+        signal,
       )
       if (initResponse.protocolVersion !== acp.PROTOCOL_VERSION) {
         throw new Error(
@@ -360,6 +396,7 @@ export class AcpClient implements AcpClientPort {
   ): Promise<void> {
     if (this.disposePromise) return this.disposePromise
     this.disposed = true
+    this.connectController?.abort(reason)
     const connecting = this.connectPromise
     const cleanup = this.cleanup(reason)
     this.disposePromise = Promise.allSettled([

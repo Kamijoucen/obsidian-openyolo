@@ -7,6 +7,15 @@ export type ComposerDraft<TImage, TNote, TExternalFile> = {
   images: TImage[]
   notes: TNote[]
   externalFiles: TExternalFile[]
+  excludedCurrentPath: string | null
+}
+
+export function isAutoAttachedCurrentNote(
+  enabled: boolean,
+  activePath: string | null,
+  candidatePath: string,
+): boolean {
+  return enabled && activePath === candidatePath
 }
 
 export function buildComposerAttachments(
@@ -35,12 +44,10 @@ export function buildComposerAttachments(
   return attachments
 }
 
-export function hasComposerContent(
-  text: string,
-  images: readonly unknown[],
-  attachments: readonly AttachedNote[],
-): boolean {
-  return text.trim().length > 0 || images.length > 0 || attachments.length > 0
+export function hasComposerText(text: string): boolean {
+  // Context enriches a prompt but is not a prompt by itself. Requiring
+  // non-whitespace text keeps button clicks and Enter submission consistent.
+  return text.trim().length > 0
 }
 
 export function settleComposerDraft<TImage, TNote, TExternalFile>(
@@ -48,5 +55,5 @@ export function settleComposerDraft<TImage, TNote, TExternalFile>(
   result: SubmitResult,
 ): ComposerDraft<TImage, TNote, TExternalFile> {
   if (result !== 'accepted') return draft
-  return { ...draft, text: '', images: [] }
+  return { ...draft, text: '', images: [], excludedCurrentPath: null }
 }

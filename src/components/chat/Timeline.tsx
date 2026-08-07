@@ -2,6 +2,7 @@ import { Loader2 } from 'lucide-react'
 import { memo, useEffect, useRef } from 'react'
 
 import { useLanguage } from '../../contexts/language-context'
+import { shouldHideTodoToolCall } from '../../core/acp/todos'
 import type { ChatSessionState } from '../../types/chat'
 
 import { AssistantEntryView, UserEntryView } from './entries'
@@ -62,6 +63,9 @@ function Timeline({ state, onPermissionRespond }: TimelineProps) {
               </div>
             )
           case 'tool':
+            if (shouldHideTodoToolCall(entry.toolCall)) {
+              return null
+            }
             return (
               <div key={entry.id} className="yolo-chat-timeline-row">
                 <ToolCallCard

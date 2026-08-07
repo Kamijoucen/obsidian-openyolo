@@ -291,40 +291,44 @@ describe('AcpClient lifecycle', () => {
     })
   })
 
-  it('keeps dispose pending until an in-flight binary lookup settles', async () => {
+  it('cancels an in-flight binary lookup without blocking dispose', async () => {
     const binary = deferred<string | null>()
     mockResolveOpencodeBinary.mockReturnValue(binary.promise)
     const client = new AcpClient(options)
     clients.push(client)
     const connecting = client.connect(makeHooks())
+    const rejectedConnect = expect(connecting).rejects.toThrow(
+      'ACP client disposed',
+    )
     await flushMicrotasks()
 
     let disposed = false
     const disposing = client.dispose().then(() => {
       disposed = true
     })
-    await flushMicrotasks()
+    await disposing
 
-    expect(disposed).toBe(false)
+    expect(disposed).toBe(true)
     expect(mockSpawnOpencodeAcp).not.toHaveBeenCalled()
+    await rejectedConnect
 
     binary.resolve('/mock/opencode')
-    await expect(connecting).rejects.toThrow(
-      'ACP client was disposed while starting',
-    )
     await disposing
 
     expect(disposed).toBe(true)
     expect(mockSpawnOpencodeAcp).not.toHaveBeenCalled()
   })
 
-  it('waits for a child returned after disposal during spawn', async () => {
+  it('cleans up a child returned after dispose without blocking dispose', async () => {
     const spawned = deferred<SpawnedProcess>()
     const fakeProcess = makeProcess()
     mockSpawnOpencodeAcp.mockReturnValue(spawned.promise)
     const client = new AcpClient(options)
     clients.push(client)
     const connecting = client.connect(makeHooks())
+    const rejectedConnect = expect(connecting).rejects.toThrow(
+      'ACP client disposed',
+    )
     await flushMicrotasks()
     expect(mockSpawnOpencodeAcp).toHaveBeenCalledTimes(1)
 
@@ -332,21 +336,18 @@ describe('AcpClient lifecycle', () => {
     const disposing = client.dispose().then(() => {
       disposed = true
     })
-    await flushMicrotasks()
-    expect(disposed).toBe(false)
+    await disposing
+    expect(disposed).toBe(true)
+    await rejectedConnect
 
     spawned.resolve(fakeProcess.child)
-    await expect(connecting).rejects.toThrow(
-      'ACP client was disposed while starting',
-    )
-    await disposing
-
+    await flushMicrotasks()
     expect(disposed).toBe(true)
     expect(fakeProcess.closeStdin).toHaveBeenCalledTimes(1)
     expect(fakeProcess.kill).not.toHaveBeenCalled()
   })
 
-  it('waits for process exit after escalating through SIGKILL', async () => {
+  it('bounds process shutdown after escalating through SIGKILL', async () => {
     const fakeProcess = makeProcess({
       stdin: false,
       sigterm: false,
@@ -376,9 +377,55 @@ describe('AcpClient lifecycle', () => {
       expect(fakeProcess.kill).toHaveBeenCalledWith('SIGKILL')
       expect(disposed).toBe(false)
 
-      fakeProcess.exit(null, 'SIGKILL')
+      jest.advanceTimersByTime(1_000)
       await disposing
       expect(disposed).toBe(true)
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  it('times out a binary lookup that never settles', async () => {
+    jest.useFakeTimers()
+    try {
+      const binary = deferred<string | null>()
+      mockResolveOpencodeBinary.mockReturnValue(binary.promise)
+      const client = new AcpClient(options)
+      clients.push(client)
+      const connecting = client.connect(makeHooks())
+      const rejectedConnect = expect(connecting).rejects.toThrow(
+        'ACP startup timed out',
+      )
+      await flushMicrotasks()
+
+      jest.advanceTimersByTime(30_000)
+      await rejectedConnect
+
+      expect(mockSpawnOpencodeAcp).not.toHaveBeenCalled()
+      expectCleanedUp(client)
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  it('uses the single startup deadline while initialize is pending', async () => {
+    jest.useFakeTimers()
+    try {
+      const fakeProcess = makeProcess()
+      const client = makeClient(fakeProcess)
+      const initializeRequest = observeInitialize(fakeProcess, () => undefined)
+      const connecting = client.connect(makeHooks())
+      const rejectedConnect = expect(connecting).rejects.toThrow(
+        'ACP startup timed out',
+      )
+      await initializeRequest
+
+      jest.advanceTimersByTime(30_000)
+      await rejectedConnect
+
+      expectCleanedUp(client)
+      expect(fakeProcess.closeStdin).toHaveBeenCalledTimes(1)
+      expect(fakeProcess.kill).not.toHaveBeenCalled()
     } finally {
       jest.useRealTimers()
     }

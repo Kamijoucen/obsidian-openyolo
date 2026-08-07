@@ -19,6 +19,10 @@ import remarkMath from 'remark-math'
 import { useApp } from '../../contexts/app-context'
 
 import {
+  remarkObsidianWikilinks,
+  wikilinkTargetFromHref,
+} from './obsidianMarkdown'
+import {
   normalizeDisplayMathDelimiters,
   preserveUnclosedMathSource,
   renderStreamingMath,
@@ -160,8 +164,9 @@ const StreamingMarkdown = memo(function StreamingMarkdown({
   const handleInternalLinkClick = useCallback(
     (href: string, event: MouseEvent<HTMLAnchorElement>) => {
       event.preventDefault()
+      const wikilinkTarget = wikilinkTargetFromHref(href)
       void app.workspace.openLinkText(
-        href,
+        wikilinkTarget ?? href,
         app.workspace.getActiveFile()?.path ?? '',
         Keymap.isModEvent(event.nativeEvent),
       )
@@ -265,7 +270,12 @@ const StreamingMarkdown = memo(function StreamingMarkdown({
       className={`markdown-rendered yolo-markdown-rendered yolo-streaming-markdown yolo-scale-${scale}`}
     >
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMath, preserveUnclosedMathSource]}
+        remarkPlugins={[
+          remarkGfm,
+          remarkMath,
+          preserveUnclosedMathSource,
+          remarkObsidianWikilinks,
+        ]}
         skipHtml
         components={{
           code: StreamingCode,

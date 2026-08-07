@@ -16,6 +16,8 @@ const commonRules = {
   'obsidianmd/ui/sentence-case': 'off',
   'obsidianmd/ui/sentence-case-json': 'off',
   'obsidianmd/ui/sentence-case-locale-module': 'off',
+  'react-hooks/rules-of-hooks': 'error',
+  'react-hooks/exhaustive-deps': 'warn',
   'sort-imports': [
     'error',
     {

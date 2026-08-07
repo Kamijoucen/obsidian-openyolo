@@ -7,14 +7,21 @@ import { TFile } from 'obsidian'
 import { KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react'
 
 import { useLanguage } from '../../contexts/language-context'
+import { useSettings } from '../../contexts/settings-context'
 import type { SessionModeState } from '../../types/chat'
 
 import {
   type SubmitResult,
   buildComposerAttachments,
-  hasComposerContent,
+  hasComposerText,
+  isAutoAttachedCurrentNote,
   settleComposerDraft,
 } from './composer'
+import {
+  IMAGE_ATTACHMENT_LIMITS,
+  type ImageAttachmentLimitReason,
+  admitImageAttachments,
+} from './imageAttachments'
 import { AttachedNote, NotePicker } from './NotePicker'
 import {
   ConfigOptionSelect,
@@ -28,6 +35,7 @@ export type InputImage = {
   mimeType: string
   data: string
   previewUrl: string
+  size: number
 }
 
 export type { AttachedNote }
@@ -48,27 +56,83 @@ type ChatInputProps = {
   onCancel: () => void
 }
 
-function readImageFile(file: File): Promise<InputImage> {
+function createAbortError(): Error {
+  const error = new Error('Image read aborted')
+  error.name = 'AbortError'
+  return error
+}
+
+function readImageFile(file: File, signal: AbortSignal): Promise<InputImage> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
+    let settled = false
+    let handleSignalAbort: () => void = () => undefined
+
+    const cleanup = () => {
+      signal.removeEventListener('abort', handleSignalAbort)
+      reader.onload = null
+      reader.onerror = null
+      reader.onabort = null
+    }
+    const resolveOnce = (image: InputImage) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      resolve(image)
+    }
+    const rejectOnce = (error: Error) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      reject(error)
+    }
+    handleSignalAbort = () => {
+      if (reader.readyState === 1) {
+        reader.abort()
+      } else {
+        rejectOnce(createAbortError())
+      }
+    }
+
     reader.onload = () => {
       const result = typeof reader.result === 'string' ? reader.result : ''
       const match = result.match(/^data:([^;]+);base64,(.+)$/)
       if (!match) {
-        reject(new Error('Failed to read image'))
+        rejectOnce(new Error('Failed to read image'))
         return
       }
-      resolve({
-        mimeType: match[1],
-        data: match[2],
-        previewUrl: result,
-      })
+      try {
+        resolveOnce({
+          mimeType: match[1],
+          data: match[2],
+          previewUrl: URL.createObjectURL(file),
+          size: file.size,
+        })
+      } catch (error) {
+        rejectOnce(
+          error instanceof Error ? error : new Error('Failed to read image'),
+        )
+      }
     }
     reader.onerror = () => {
-      reject(reader.error ?? new Error('Failed to read image'))
+      rejectOnce(reader.error ?? new Error('Failed to read image'))
     }
+    reader.onabort = () => rejectOnce(createAbortError())
+    if (signal.aborted) {
+      rejectOnce(createAbortError())
+      return
+    }
+    signal.addEventListener('abort', handleSignalAbort, { once: true })
     reader.readAsDataURL(file)
   })
+}
+
+function revokeImagePreview(image: InputImage): void {
+  URL.revokeObjectURL(image.previewUrl)
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError'
 }
 
 const TEXT_FILE_EXT =
@@ -111,6 +175,7 @@ function ChatInput({
   onCancel,
 }: ChatInputProps) {
   const { t } = useLanguage()
+  const { settings } = useSettings()
   const [text, setText] = useState('')
   const [images, setImages] = useState<InputImage[]>([])
   const [notes, setNotes] = useState<TFile[]>([])
@@ -119,13 +184,33 @@ function ChatInput({
     null,
   )
   const [submitting, setSubmitting] = useState(false)
+  const [attachmentError, setAttachmentError] = useState<string | null>(null)
   const [commandIndex, setCommandIndex] = useState(0)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const submittingRef = useRef(false)
+  const mountedRef = useRef(true)
+  const imagesRef = useRef<InputImage[]>([])
+  const imageUsageRef = useRef({ count: 0, bytes: 0 })
+  const pendingImageReadsRef = useRef(new Set<AbortController>())
   const activeFile = useActiveFile()
 
+  useEffect(() => {
+    mountedRef.current = true
+    const pendingReads = pendingImageReadsRef.current
+    return () => {
+      mountedRef.current = false
+      for (const controller of pendingReads) {
+        controller.abort()
+      }
+      pendingReads.clear()
+      for (const image of imagesRef.current) revokeImagePreview(image)
+      imagesRef.current = []
+    }
+  }, [])
+
   const currentNote =
+    settings.attachCurrentNote &&
     activeFile &&
     activeFile.extension === 'md' &&
     activeFile.path !== excludedCurrentPath
@@ -154,10 +239,100 @@ function ChatInput({
       ),
     [currentNote, notes, externalFiles],
   )
-  const hasContent = hasComposerContent(text, images, attachedNotes)
+  const canSubmit = hasComposerText(text)
+
+  const releaseImageUsage = (image: Pick<InputImage, 'size'>) => {
+    imageUsageRef.current = {
+      count: Math.max(0, imageUsageRef.current.count - 1),
+      bytes: Math.max(0, imageUsageRef.current.bytes - image.size),
+    }
+  }
+
+  const replaceImages = (next: InputImage[]) => {
+    imagesRef.current = next
+    setImages(next)
+  }
+
+  const removeImage = (image: InputImage) => {
+    if (!imagesRef.current.includes(image)) return
+    releaseImageUsage(image)
+    revokeImagePreview(image)
+    replaceImages(imagesRef.current.filter((item) => item !== image))
+  }
+
+  const limitMessage = (reason: ImageAttachmentLimitReason): string => {
+    switch (reason) {
+      case 'file_too_large':
+        return t(
+          'chat.imageTooLarge',
+          `Each image must be ${IMAGE_ATTACHMENT_LIMITS.maxFileBytes / 1024 / 1024} MiB or smaller.`,
+        )
+      case 'count_limit':
+        return t(
+          'chat.imageCountLimit',
+          `You can attach up to ${IMAGE_ATTACHMENT_LIMITS.maxCount} images.`,
+        )
+      case 'total_size_limit':
+        return t(
+          'chat.imageTotalLimit',
+          `Image attachments can total up to ${IMAGE_ATTACHMENT_LIMITS.maxTotalBytes / 1024 / 1024} MiB.`,
+        )
+    }
+  }
+
+  const queueImageFiles = (files: readonly File[]) => {
+    if (files.length === 0) return
+    setAttachmentError(null)
+    const admission = admitImageAttachments(
+      files,
+      imageUsageRef.current.count,
+      imageUsageRef.current.bytes,
+    )
+    const rejectionMessages = [
+      ...new Set(admission.rejected.map(({ reason }) => limitMessage(reason))),
+    ]
+    if (rejectionMessages.length > 0) {
+      setAttachmentError(rejectionMessages.join(' '))
+    }
+
+    for (const file of admission.accepted) {
+      imageUsageRef.current = {
+        count: imageUsageRef.current.count + 1,
+        bytes: imageUsageRef.current.bytes + file.size,
+      }
+      const controller = new AbortController()
+      pendingImageReadsRef.current.add(controller)
+      void readImageFile(file, controller.signal)
+        .then((image) => {
+          if (!mountedRef.current || controller.signal.aborted) {
+            revokeImagePreview(image)
+            releaseImageUsage(image)
+            return
+          }
+          replaceImages([...imagesRef.current, image])
+        })
+        .catch((error: unknown) => {
+          releaseImageUsage({ size: file.size })
+          if (mountedRef.current && !isAbortError(error)) {
+            setAttachmentError(
+              t('chat.imageReadFailed', 'Could not read the selected image.'),
+            )
+          }
+        })
+        .finally(() => {
+          pendingImageReadsRef.current.delete(controller)
+        })
+    }
+  }
 
   const toggleNote = (file: TFile) => {
-    if (activeFile && file.path === activeFile.path) {
+    if (
+      isAutoAttachedCurrentNote(
+        settings.attachCurrentNote,
+        activeFile?.path ?? null,
+        file.path,
+      )
+    ) {
       setExcludedCurrentPath((prev) => (prev === file.path ? null : file.path))
       setNotes((prev) => prev.filter((note) => note.path !== file.path))
       return
@@ -202,32 +377,47 @@ function ChatInput({
       running ||
       disabled ||
       submittingRef.current ||
-      !hasComposerContent(trimmed, images, attachedNotes)
+      !hasComposerText(trimmed)
     ) {
       return
     }
 
     submittingRef.current = true
     setSubmitting(true)
-    const draft = { text, images, notes, externalFiles }
+    const draft = {
+      text,
+      images,
+      notes,
+      externalFiles,
+      excludedCurrentPath,
+    }
     try {
       const result = await onSubmit(trimmed, images, attachedNotes)
+      if (!mountedRef.current) return
       const settled = settleComposerDraft(draft, result)
       if (settled !== draft) {
-        setText((current) => (current === draft.text ? settled.text : current))
-        setImages((current) =>
-          current.filter((image) => !draft.images.includes(image)),
+        for (const image of draft.images) {
+          releaseImageUsage(image)
+          revokeImagePreview(image)
+        }
+        const remainingImages = imagesRef.current.filter(
+          (image) => !draft.images.includes(image),
         )
+        imagesRef.current = remainingImages
+        setText((current) => (current === draft.text ? settled.text : current))
+        setImages(remainingImages)
+        setExcludedCurrentPath(settled.excludedCurrentPath)
       }
     } catch {
       // A rejected submission has failed; leave the draft intact for retry.
     } finally {
       submittingRef.current = false
-      setSubmitting(false)
+      if (mountedRef.current) setSubmitting(false)
     }
   }
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.nativeEvent.isComposing) return
     if (matchedCommands.length > 0) {
       if (event.key === 'ArrowDown') {
         event.preventDefault()
@@ -263,29 +453,27 @@ function ChatInput({
   const handlePaste = (event: React.ClipboardEvent) => {
     const items = event.clipboardData?.items
     if (!items) return
+    const imageFiles: File[] = []
     for (const item of Array.from(items)) {
       if (item.type.startsWith('image/')) {
-        event.preventDefault()
         const file = item.getAsFile()
-        if (file) {
-          void readImageFile(file).then((image) => {
-            setImages((prev) => [...prev, image])
-          })
-        }
-        return
+        if (file) imageFiles.push(file)
       }
+    }
+    if (imageFiles.length > 0) {
+      event.preventDefault()
+      queueImageFiles(imageFiles)
     }
   }
 
   const handleFiles = (files: FileList | null) => {
     if (!files) return
-    for (const file of Array.from(files)) {
-      if (file.type.startsWith('image/')) {
-        void readImageFile(file).then((image) => {
-          setImages((prev) => [...prev, image])
-        })
-        continue
-      }
+    const selectedFiles = Array.from(files)
+    queueImageFiles(
+      selectedFiles.filter((file) => file.type.startsWith('image/')),
+    )
+    for (const file of selectedFiles) {
+      if (file.type.startsWith('image/')) continue
       if (isTextLikeFile(file)) {
         const absolutePath = resolveFilePath(file)
         if (absolutePath) {
@@ -314,6 +502,7 @@ function ChatInput({
               <button
                 key={command.name}
                 type="button"
+                role="menuitem"
                 className={`yolo-popover-item yolo-acp-command-item${
                   index === commandIndex ? ' is-active' : ''
                 }`}
@@ -354,6 +543,7 @@ function ChatInput({
                     type="button"
                     className="yolo-acp-note-chip__remove"
                     disabled={disabled || submitting}
+                    aria-label={`${t('chat.removeAttachment', 'Remove attachment')}: ${currentNote.basename}`}
                     onClick={() => setExcludedCurrentPath(currentNote.path)}
                   >
                     <X size={12} />
@@ -374,6 +564,7 @@ function ChatInput({
                     type="button"
                     className="yolo-acp-note-chip__remove"
                     disabled={disabled || submitting}
+                    aria-label={`${t('chat.removeAttachment', 'Remove attachment')}: ${note.basename}`}
                     onClick={() =>
                       setNotes((prev) =>
                         prev.filter((item) => item.path !== note.path),
@@ -398,6 +589,7 @@ function ChatInput({
                     type="button"
                     className="yolo-acp-note-chip__remove"
                     disabled={disabled || submitting}
+                    aria-label={`${t('chat.removeAttachment', 'Remove attachment')}: ${file.name}`}
                     onClick={() =>
                       setExternalFiles((prev) =>
                         prev.filter((item) => item.path !== file.path),
@@ -411,14 +603,17 @@ function ChatInput({
                 </span>
               ))}
               {images.map((image, index) => (
-                <div key={index} className="yolo-acp-input-image">
-                  <img src={image.previewUrl} alt="" />
+                <div key={image.previewUrl} className="yolo-acp-input-image">
+                  <img
+                    src={image.previewUrl}
+                    alt={`${t('chat.attachedImage', 'Attached image')} ${index + 1}`}
+                  />
                   <button
+                    type="button"
                     className="yolo-acp-input-image-remove"
                     disabled={disabled || submitting}
-                    onClick={() =>
-                      setImages((prev) => prev.filter((_, i) => i !== index))
-                    }
+                    aria-label={`${t('chat.removeImage', 'Remove image')} ${index + 1}`}
+                    onClick={() => removeImage(image)}
                   >
                     <X size={10} />
                   </button>
@@ -426,11 +621,19 @@ function ChatInput({
               ))}
             </div>
           ) : null}
+          {attachmentError ? (
+            <div className="yolo-acp-attachment-error" role="alert">
+              {attachmentError}
+            </div>
+          ) : null}
           <div className="yolo-chat-user-input-editor">
             <textarea
               ref={textareaRef}
               className="yolo-acp-textarea"
               placeholder={t('chat.inputPlaceholder', 'Ask anything…')}
+              aria-label={t('chat.inputPlaceholder', 'Ask anything…')}
+              aria-haspopup={matchedCommands.length > 0 ? 'menu' : undefined}
+              aria-expanded={matchedCommands.length > 0}
               value={text}
               rows={1}
               disabled={disabled || submitting}
@@ -464,6 +667,7 @@ function ChatInput({
                   type="button"
                   className="yolo-chat-user-input-submit-button-circle is-stop"
                   title={t('chat.stopGenerating', 'Stop')}
+                  aria-label={t('chat.stopGenerating', 'Stop')}
                   onClick={onCancel}
                 >
                   <Square size={12} fill="currentColor" />
@@ -473,8 +677,9 @@ function ChatInput({
                   type="button"
                   className="yolo-chat-user-input-submit-button-circle"
                   title={t('common.send', 'Send')}
+                  aria-label={t('common.send', 'Send')}
                   onClick={() => void doSubmit()}
-                  disabled={running || disabled || submitting || !hasContent}
+                  disabled={running || disabled || submitting || !canSubmit}
                 >
                   <ArrowUp size={14} />
                 </button>

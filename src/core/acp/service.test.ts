@@ -6,6 +6,8 @@ import type {
   NewSessionResponse,
   PromptResponse,
   SendRequestOptions,
+  SessionConfigOption,
+  SetSessionConfigOptionResponse,
 } from '@agentclientprotocol/sdk'
 import type { App } from 'obsidian'
 
@@ -54,6 +56,7 @@ const SETTINGS: YoloSettings = {
   autoApprovePermissions: false,
   showReasoning: true,
   debugLog: false,
+  attachCurrentNote: true,
   systemPrompt: '',
   manageAgentsMd: false,
   savedConfigSelections: {},
@@ -64,6 +67,34 @@ const APP = {
 } as unknown as App
 
 const PROMPT: ContentBlock[] = [{ type: 'text', text: 'hello' }]
+
+function modelOption(currentValue: string): SessionConfigOption {
+  return {
+    id: 'model',
+    name: 'Model',
+    category: 'model',
+    type: 'select',
+    currentValue,
+    options: [
+      { value: 'model-a', name: 'Model A' },
+      { value: 'model-b', name: 'Model B' },
+    ],
+  }
+}
+
+function thoughtLevelOption(
+  currentValue: string,
+  values: string[],
+): SessionConfigOption {
+  return {
+    id: 'variant',
+    name: 'Thinking effort',
+    category: 'thought_level',
+    type: 'select',
+    currentValue,
+    options: values.map((value) => ({ value, name: value })),
+  }
+}
 
 function deferred<T>(): Deferred<T> {
   let resolve!: Deferred<T>['resolve']
@@ -240,6 +271,206 @@ afterEach(async () => {
 })
 
 describe('AcpSessionService', () => {
+  it('exposes the configured default mode before session setup finishes', () => {
+    const connect = deferred<undefined>()
+    const client = new FakeClient('A', connect)
+    const { service } = makeService(client)
+
+    const tabId = service.createTab()
+
+    expect(service.getState(tabId)?.mode?.current).toBe('build')
+    connect.reject(new Error('test cleanup'))
+  })
+
+  it('eagerly probes only the first tab and creates later sessions on submit', async () => {
+    const client = new FakeClient('A')
+    const { service } = makeService(client)
+
+    service.createTab()
+    await flushMicrotasks()
+    const secondTabId = service.createTab()
+    await flushMicrotasks()
+
+    expect(client.countRequests('session/new')).toBe(1)
+
+    expect(await service.submit(secondTabId, 'hello', PROMPT)).toBe('accepted')
+    expect(client.countRequests('session/new')).toBe(2)
+  })
+
+  it('retries the eager selector probe after startup recovers', async () => {
+    const connect = deferred<undefined>()
+    const firstClient = new FakeClient('A', connect)
+    const secondClient = new FakeClient('B')
+    secondClient.queueResponse('session/new', {
+      sessionId: 'recovered-session',
+      configOptions: [
+        modelOption('model-b'),
+        thoughtLevelOption('low', ['none', 'low']),
+      ],
+    })
+    const { service, createClient } = makeService(firstClient, secondClient)
+    const tabId = service.createTab()
+
+    connect.reject(new Error('configured path is unavailable'))
+    await flushMicrotasks()
+    expect(service.getAvailability()).toBe('unavailable')
+
+    await service.restart()
+
+    expect(createClient).toHaveBeenCalledTimes(2)
+    expect(secondClient.requests.map((request) => request.method)).toEqual([
+      'session/new',
+    ])
+    expect(service.getState(tabId)?.configOptions).toEqual([
+      modelOption('model-b'),
+      thoughtLevelOption('low', ['none', 'low']),
+    ])
+  })
+
+  it('removes thought levels when a lazy tab switches to a model without variants', async () => {
+    const client = new FakeClient('A')
+    client.queueResponse('session/new', {
+      sessionId: 'session-1',
+      configOptions: [
+        modelOption('model-a'),
+        thoughtLevelOption('max', ['none', 'low', 'medium', 'high', 'max']),
+      ],
+    })
+    client.queueResponse('session/new', {
+      sessionId: 'session-2',
+      configOptions: [
+        modelOption('model-a'),
+        thoughtLevelOption('max', ['none', 'low', 'medium', 'high', 'max']),
+      ],
+    })
+    client.queueResponse('session/set_config_option', {
+      configOptions: [modelOption('model-b')],
+    })
+    const { service } = makeService(client)
+
+    service.createTab()
+    await flushMicrotasks()
+    const lazyTabId = service.createTab()
+
+    expect(client.countRequests('session/new')).toBe(1)
+    expect(
+      service
+        .getState(lazyTabId)
+        ?.configOptions.find((option) => option.category === 'thought_level'),
+    ).toMatchObject({
+      currentValue: 'max',
+      options: expect.arrayContaining([
+        expect.objectContaining({ value: 'max' }),
+      ]),
+    })
+
+    await service.setConfigOption(lazyTabId, 'model', 'model-b')
+
+    expect(client.requests.map((request) => request.method)).toEqual([
+      'session/new',
+      'session/new',
+      'session/set_config_option',
+    ])
+    expect(client.requests.at(-1)?.params).toEqual({
+      sessionId: 'session-2',
+      configId: 'model',
+      value: 'model-b',
+    })
+    expect(
+      service
+        .getState(lazyTabId)
+        ?.configOptions.find((option) => option.category === 'thought_level'),
+    ).toBeUndefined()
+  })
+
+  it('drops a stale thought level queued behind a model change', async () => {
+    const modelChange = deferred<SetSessionConfigOptionResponse>()
+    const client = new FakeClient('A')
+    client.queueResponse('session/new', {
+      sessionId: 'session-1',
+      configOptions: [
+        modelOption('model-a'),
+        thoughtLevelOption('max', ['none', 'low', 'medium', 'high', 'max']),
+      ],
+    })
+    client.queueResponse('session/set_config_option', modelChange.promise)
+    const persist = jest.fn()
+    const service = new AcpSessionService(
+      APP,
+      () => SETTINGS,
+      'test-version',
+      persist,
+      () => client,
+    )
+    services.push(service)
+    const tabId = service.createTab()
+    await flushMicrotasks()
+
+    const changingModel = service.setConfigOption(tabId, 'model', 'model-b')
+    await flushMicrotasks()
+    const staleEffort = service.setConfigOption(tabId, 'variant', 'max')
+
+    modelChange.resolve({ configOptions: [modelOption('model-b')] })
+    await Promise.all([changingModel, staleEffort])
+
+    expect(client.countRequests('session/set_config_option')).toBe(1)
+    expect(client.requests.at(-1)?.params).toEqual({
+      sessionId: 'session-1',
+      configId: 'model',
+      value: 'model-b',
+    })
+    expect(
+      service
+        .getState(tabId)
+        ?.configOptions.find((option) => option.category === 'thought_level'),
+    ).toBeUndefined()
+    expect(persist).toHaveBeenCalledTimes(1)
+    expect(persist).toHaveBeenCalledWith('model', 'model-b')
+    expect(persist).not.toHaveBeenCalledWith('variant', 'max')
+  })
+
+  it('keeps a consistent model and thought-level pair on an invalid response', async () => {
+    const client = new FakeClient('A')
+    client.queueResponse('session/new', {
+      sessionId: 'session-1',
+      configOptions: [
+        modelOption('model-a'),
+        thoughtLevelOption('max', ['none', 'low', 'medium', 'high', 'max']),
+      ],
+    })
+    client.queueResponse('session/set_config_option', {})
+    const persist = jest.fn()
+    const service = new AcpSessionService(
+      APP,
+      () => SETTINGS,
+      'test-version',
+      persist,
+      () => client,
+    )
+    services.push(service)
+    const tabId = service.createTab()
+    await flushMicrotasks()
+
+    await service.setConfigOption(tabId, 'model', 'model-b')
+
+    const configOptions = service.getState(tabId)?.configOptions ?? []
+    expect(
+      configOptions.find((option) => option.category === 'model'),
+    ).toMatchObject({ currentValue: 'model-a' })
+    expect(
+      configOptions.find((option) => option.category === 'thought_level'),
+    ).toMatchObject({
+      currentValue: 'max',
+      options: expect.arrayContaining([
+        expect.objectContaining({ value: 'max' }),
+      ]),
+    })
+    expect(persist).not.toHaveBeenCalled()
+    expect(service.getState(tabId)?.error).toBe(
+      'ACP session/set_config_option did not return configOptions',
+    )
+  })
+
   it('deduplicates eager createTab session/new with the first submit', async () => {
     const sessionNew = deferred<NewSessionResponse>()
     const prompt = deferred<PromptResponse>()
@@ -262,6 +493,20 @@ describe('AcpSessionService', () => {
     expect(newCallsWhilePending).toBe(1)
     expect(result).toBe('accepted')
     expect(promptCalls).toBe(1)
+  })
+
+  it('rejects whitespace-only text even when prompt blocks contain context', async () => {
+    const client = new FakeClient('A')
+    const { service } = makeService(client)
+    const tabId = service.createTab()
+    await flushMicrotasks()
+
+    expect(await service.submit(tabId, ' \n ', PROMPT)).toBe('failed')
+    expect(client.countRequests('session/prompt')).toBe(0)
+    expect(service.getState(tabId)).toMatchObject({
+      entries: [],
+      status: 'idle',
+    })
   })
 
   it('returns busy and does not send another prompt while one is pending', async () => {
@@ -313,6 +558,112 @@ describe('AcpSessionService', () => {
     } finally {
       jest.useRealTimers()
     }
+  })
+
+  it('does not recycle a healthy connection when a control request times out', async () => {
+    jest.useFakeTimers()
+    try {
+      const listing = deferred<{ sessions: [] }>()
+      const client = new FakeClient('A')
+      client.queueResponse('session/list', listing.promise)
+      const { service } = makeService(client)
+
+      const pending = service.listHistory()
+      await flushMicrotasks()
+      const request = client.requests.find(
+        (candidate) => candidate.method === 'session/list',
+      )
+
+      jest.advanceTimersByTime(60_000)
+      await expect(pending).rejects.toThrow('ACP session/list timed out')
+
+      expect(request?.options?.cancellationSignal?.aborted).toBe(true)
+      expect(client.isConnected).toBe(true)
+      expect(client.dispose).not.toHaveBeenCalled()
+      expect(service.getAvailability()).toBe('ready')
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  it('serializes mode changes and keeps the last confirmed mode on failure', async () => {
+    const firstMode = deferred<Record<string, never>>()
+    const client = new FakeClient('A')
+    client.queueResponse('session/new', {
+      sessionId: 'session-1',
+      modes: {
+        currentModeId: 'build',
+        availableModes: [
+          { id: 'build', name: 'Build' },
+          { id: 'plan', name: 'Plan' },
+        ],
+      },
+    })
+    client.queueResponse('session/set_mode', firstMode.promise)
+    client.queueResponse('session/set_mode', new Error('mode rejected'))
+    const { service } = makeService(client)
+    const tabId = service.createTab()
+    await flushMicrotasks()
+
+    const first = service.setMode(tabId, 'plan')
+    const second = service.setMode(tabId, 'build')
+    await flushMicrotasks()
+
+    expect(client.countRequests('session/set_mode')).toBe(1)
+    expect(service.getState(tabId)?.mode?.current).toBe('build')
+
+    firstMode.resolve({})
+    await Promise.all([first, second])
+
+    expect(client.countRequests('session/set_mode')).toBe(2)
+    expect(service.getState(tabId)?.mode?.current).toBe('plan')
+    expect(service.getState(tabId)?.error).toBe('mode rejected')
+  })
+
+  it('serializes config changes and persists only confirmed values', async () => {
+    const firstConfig = deferred<SetSessionConfigOptionResponse>()
+    const client = new FakeClient('A')
+    client.queueResponse('session/new', {
+      sessionId: 'session-1',
+      configOptions: [modelOption('model-a')],
+    })
+    client.queueResponse('session/set_config_option', firstConfig.promise)
+    client.queueResponse(
+      'session/set_config_option',
+      new Error('config rejected'),
+    )
+    const persist = jest.fn()
+    const service = new AcpSessionService(
+      APP,
+      () => SETTINGS,
+      'test-version',
+      persist,
+      () => client,
+    )
+    services.push(service)
+    const tabId = service.createTab()
+    await flushMicrotasks()
+
+    const first = service.setConfigOption(tabId, 'model', 'model-b')
+    const second = service.setConfigOption(tabId, 'model', 'model-a')
+    await flushMicrotasks()
+
+    expect(client.countRequests('session/set_config_option')).toBe(1)
+    expect(service.getState(tabId)?.configOptions[0]).toMatchObject({
+      currentValue: 'model-a',
+    })
+    expect(persist).not.toHaveBeenCalled()
+
+    firstConfig.resolve({ configOptions: [modelOption('model-b')] })
+    await Promise.all([first, second])
+
+    expect(client.countRequests('session/set_config_option')).toBe(2)
+    expect(service.getState(tabId)?.configOptions[0]).toMatchObject({
+      currentValue: 'model-b',
+    })
+    expect(persist).toHaveBeenCalledTimes(1)
+    expect(persist).toHaveBeenCalledWith('model', 'model-b')
+    expect(service.getState(tabId)?.error).toBe('config rejected')
   })
 
   it('returns failed without a local user entry when connect fails', async () => {
@@ -381,6 +732,32 @@ describe('AcpSessionService', () => {
       client.requests.find((request) => request.method === 'session/close')
         ?.params,
     ).toEqual({ sessionId: 'history-1' })
+  })
+
+  it('removes a failed history placeholder so recent-tab recovery can fall back', async () => {
+    const client = new FakeClient('A')
+    client.queueResponse('session/list', {
+      sessions: [
+        {
+          sessionId: 'history-1',
+          title: 'History',
+          updatedAt: '2026-08-07T00:00:00Z',
+        },
+      ],
+    })
+    client.queueResponse('session/load', new Error('history unavailable'))
+    const { service } = makeService(client)
+
+    const tabId = await service.openMostRecentTab()
+    await flushMicrotasks()
+
+    expect(service.listTabs()).toEqual([{ tabId }])
+    expect(client.requests.map((request) => request.method)).toEqual([
+      'session/list',
+      'session/load',
+      'session/new',
+    ])
+    expect(service.getState(tabId)?.sessionId).toBe('A-session-1')
   })
 
   it('retries with a new client and resumes the old session before prompting', async () => {
@@ -482,6 +859,69 @@ describe('AcpSessionService', () => {
     expect(service.getAgentInfo()?.name).toBe('B')
   })
 
+  it('restarts with new settings while retaining tabs and session ids', async () => {
+    const oldPrompt = deferred<PromptResponse>()
+    const firstClient = new FakeClient('A')
+    const secondClient = new FakeClient('B')
+    firstClient.queueResponse('session/prompt', oldPrompt.promise)
+    let settings: YoloSettings = {
+      ...SETTINGS,
+      opencodePath: '/old/opencode',
+      opencodeArgs: ['--old'],
+    }
+    const remaining = [firstClient, secondClient]
+    const createClient = jest.fn((_options: AcpClientOptions) => {
+      const client = remaining.shift()
+      if (!client) throw new Error('No fake ACP client available')
+      return client
+    })
+    const service = new AcpSessionService(
+      APP,
+      () => settings,
+      'test-version',
+      undefined,
+      createClient,
+    )
+    services.push(service)
+    const tabId = service.createTab()
+    await flushMicrotasks()
+    const sessionId = service.getState(tabId)?.sessionId
+    expect(await service.submit(tabId, 'before restart', PROMPT)).toBe(
+      'accepted',
+    )
+
+    settings = {
+      ...settings,
+      opencodePath: '/new/opencode',
+      opencodeArgs: ['--new'],
+    }
+    await Promise.all([service.restart(), service.restart()])
+
+    expect(createClient).toHaveBeenCalledTimes(2)
+    expect(createClient.mock.calls[0]?.[0]).toMatchObject({
+      configuredPath: '/old/opencode',
+      extraArgs: ['--old'],
+    })
+    expect(createClient.mock.calls[1]?.[0]).toMatchObject({
+      configuredPath: '/new/opencode',
+      extraArgs: ['--new'],
+    })
+    expect(firstClient.dispose).toHaveBeenCalled()
+    expect(service.listTabs()).toEqual([{ tabId }])
+    expect(service.getState(tabId)?.sessionId).toBe(sessionId)
+    expect(service.getState(tabId)?.status).toBe('error')
+    expect(service.getState(tabId)?.error).toBe('ACP connection restarted')
+    expect(service.getAvailability()).toBe('ready')
+
+    expect(await service.submit(tabId, 'after restart', PROMPT)).toBe(
+      'accepted',
+    )
+    expect(secondClient.requests.map((request) => request.method)).toEqual([
+      'session/resume',
+      'session/prompt',
+    ])
+  })
+
   it('does not attach a late history load response to a new connection', async () => {
     const load = deferred<LoadSessionResponse>()
     const firstClient = new FakeClient('A')
@@ -499,14 +939,19 @@ describe('AcpSessionService', () => {
     })
     await service.ensureStarted()
     load.resolve({})
-    const tabId = await opening
+    await expect(opening).rejects.toThrow(
+      'ACP connection changed during the operation',
+    )
+    expect(service.listTabs()).toEqual([])
+
+    const tabId = await service.openHistoryTab('history-1', 'History')
 
     const result = await service.submit(tabId, 'retry', PROMPT)
     await flushMicrotasks()
 
     expect(result).toBe('accepted')
     expect(secondClient.requests.map((request) => request.method)).toEqual([
-      'session/resume',
+      'session/load',
       'session/prompt',
     ])
   })
@@ -534,7 +979,9 @@ describe('AcpSessionService', () => {
     expect(service.getState(tabId)?.status).toBe('running')
 
     load.resolve({})
-    await opening
+    await expect(opening).rejects.toThrow(
+      'ACP connection changed during the operation',
+    )
     expect(service.getState(tabId)?.status).toBe('running')
 
     prompt.resolve({ stopReason: 'end_turn' })
@@ -808,7 +1255,7 @@ describe('AcpSessionService', () => {
       await closing
       expect(createClient).toHaveBeenCalledTimes(2)
       expect(secondClient.requests.map((request) => request.method)).toEqual([
-        'session/resume',
+        'session/new',
         'session/prompt',
       ])
 

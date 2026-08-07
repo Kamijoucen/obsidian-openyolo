@@ -1,6 +1,7 @@
 import { memo, useMemo } from 'react'
 
-import { createInlineDiffLines } from '../../utils/diff'
+import { useLanguage } from '../../contexts/language-context'
+import { createBoundedInlineDiff } from '../../utils/diff'
 
 type DiffViewProps = {
   oldText: string
@@ -11,10 +12,12 @@ type DiffViewProps = {
 const MAX_LINES = 200
 
 function DiffView({ oldText, newText, path }: DiffViewProps) {
-  const lines = useMemo(
-    () => createInlineDiffLines(oldText.split('\n'), newText.split('\n')),
+  const { t } = useLanguage()
+  const diff = useMemo(
+    () => createBoundedInlineDiff(oldText, newText),
     [oldText, newText],
   )
+  const { lines } = diff
   const truncated = lines.length > MAX_LINES
   const visible = truncated ? lines.slice(0, MAX_LINES) : lines
 
@@ -44,6 +47,14 @@ function DiffView({ oldText, newText, path }: DiffViewProps) {
             <span className="yolo-diff-sign">…</span>
             <span className="yolo-diff-text">
               {lines.length - MAX_LINES} more lines
+            </span>
+          </div>
+        ) : null}
+        {diff.inputTruncated ? (
+          <div className="yolo-diff-line yolo-diff-line--unchanged">
+            <span className="yolo-diff-sign">…</span>
+            <span className="yolo-diff-text">
+              {t('chat.diffPreviewTruncated', 'Diff preview truncated')}
             </span>
           </div>
         ) : null}

@@ -8,10 +8,25 @@ import {
   ListChecks,
   Wrench,
 } from 'lucide-react'
-import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import { createPortal } from 'react-dom'
 
 import { useLanguage } from '../../contexts/language-context'
+
+import {
+  type PopoverAlign,
+  calculatePopoverPosition,
+  getMenuNavigationIndex,
+  isMenuNavigationKey,
+} from './popoverNavigation'
 
 type FlatOption = {
   value: string
@@ -43,57 +58,111 @@ function flattenConfigOptions(option: SessionConfigOption): FlatOption[] {
 }
 
 const POPOVER_OPEN_EVENT = 'yolo-acp-popover-open'
+const MENU_ITEM_SELECTOR =
+  '[role="menuitem"], [role="menuitemradio"], [role="menuitemcheckbox"]'
+const CHECKED_MENU_ITEM_SELECTOR =
+  '[role="menuitem"][aria-checked="true"], [role="menuitemradio"][aria-checked="true"], [role="menuitemcheckbox"][aria-checked="true"]'
 let popoverSeq = 0
+
+type PopoverOpenAction = boolean | ((previous: boolean) => boolean)
+
+function findPopoverTrigger(container: HTMLElement | null): HTMLElement | null {
+  return container?.querySelector<HTMLElement>('button:not(:disabled)') ?? null
+}
+
+function getEnabledMenuItems(popover: HTMLElement): HTMLElement[] {
+  return Array.from(
+    popover.querySelectorAll<HTMLElement>(MENU_ITEM_SELECTOR),
+  ).filter(
+    (item) =>
+      !item.matches(':disabled') &&
+      item.getAttribute('aria-disabled') !== 'true',
+  )
+}
 
 export function usePopover() {
   const [open, setOpen] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
   const idRef = useRef<string>(`popover-${++popoverSeq}`)
+  const openRef = useRef(false)
 
-  const setOpenWrapped = (next: boolean | ((prev: boolean) => boolean)) => {
-    setOpen((prev) => {
-      const value = typeof next === 'function' ? next(prev) : next
-      if (value && !prev) {
-        window.dispatchEvent(
-          new CustomEvent(POPOVER_OPEN_EVENT, { detail: idRef.current }),
-        )
+  const restoreTriggerFocus = useCallback(() => {
+    findPopoverTrigger(containerRef.current)?.focus()
+  }, [])
+
+  const closePopover = useCallback(
+    (restoreFocus: boolean) => {
+      if (!openRef.current) return
+      openRef.current = false
+      setOpen(false)
+      if (restoreFocus) restoreTriggerFocus()
+    },
+    [restoreTriggerFocus],
+  )
+
+  const setOpenWrapped = useCallback(
+    (next: PopoverOpenAction) => {
+      const previous = openRef.current
+      const value = typeof next === 'function' ? next(previous) : next
+      if (value === previous) return
+      openRef.current = value
+      setOpen(value)
+
+      if (value) {
+        const ownerWindow = containerRef.current?.ownerDocument.defaultView
+        if (ownerWindow) {
+          ownerWindow.dispatchEvent(
+            new ownerWindow.CustomEvent(POPOVER_OPEN_EVENT, {
+              detail: idRef.current,
+            }),
+          )
+        }
+      } else {
+        restoreTriggerFocus()
       }
-      return value
-    })
-  }
+    },
+    [restoreTriggerFocus],
+  )
 
   useEffect(() => {
     if (!open) return
+    const container = containerRef.current
+    const ownerDocument = container?.ownerDocument
+    const ownerWindow = ownerDocument?.defaultView
+    if (!container || !ownerDocument || !ownerWindow) return
+
     const handlePointerDown = (event: MouseEvent) => {
-      const target = event.target as Node
+      const target = event.target
+      const targetNode = target instanceof ownerWindow.Node ? target : null
+      const targetElement =
+        target instanceof ownerWindow.Element ? target : null
       if (
-        containerRef.current &&
-        !containerRef.current.contains(target) &&
-        !(
-          target.instanceOf(Element) &&
-          target.closest('.yolo-acp-select-popover')
-        )
+        (!targetNode || !container.contains(targetNode)) &&
+        !targetElement?.closest('.yolo-acp-select-popover')
       ) {
-        setOpen(false)
+        closePopover(false)
       }
     }
     const handleEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false)
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopPropagation()
+      closePopover(true)
     }
     const handleOtherOpen = (event: Event) => {
       if ((event as CustomEvent<string>).detail !== idRef.current) {
-        setOpen(false)
+        closePopover(false)
       }
     }
-    document.addEventListener('mousedown', handlePointerDown)
-    document.addEventListener('keydown', handleEscape)
-    window.addEventListener(POPOVER_OPEN_EVENT, handleOtherOpen)
+    ownerDocument.addEventListener('mousedown', handlePointerDown)
+    ownerDocument.addEventListener('keydown', handleEscape)
+    ownerWindow.addEventListener(POPOVER_OPEN_EVENT, handleOtherOpen)
     return () => {
-      document.removeEventListener('mousedown', handlePointerDown)
-      document.removeEventListener('keydown', handleEscape)
-      window.removeEventListener(POPOVER_OPEN_EVENT, handleOtherOpen)
+      ownerDocument.removeEventListener('mousedown', handlePointerDown)
+      ownerDocument.removeEventListener('keydown', handleEscape)
+      ownerWindow.removeEventListener(POPOVER_OPEN_EVENT, handleOtherOpen)
     }
-  }, [open])
+  }, [closePopover, open])
   return { open, setOpen: setOpenWrapped, containerRef }
 }
 
@@ -105,36 +174,129 @@ export function SelectPopover({
 }: {
   open: boolean
   anchorRef: React.RefObject<HTMLDivElement | null>
-  align?: 'left' | 'right'
+  align?: PopoverAlign
   children: React.ReactNode
 }) {
   const [style, setStyle] = useState<React.CSSProperties>({})
+  const popoverRef = useRef<HTMLDivElement>(null)
 
-  useEffect(() => {
-    if (!open || !anchorRef.current) return
-    const rect = anchorRef.current.getBoundingClientRect()
-    const next: React.CSSProperties = {
-      position: 'fixed',
-      bottom: `${window.innerHeight - rect.top + 4}px`,
-      maxHeight: Math.min(300, rect.top - 12),
+  useLayoutEffect(() => {
+    const anchor = anchorRef.current
+    const ownerDocument = anchor?.ownerDocument
+    const ownerWindow = ownerDocument?.defaultView
+    if (!open || !anchor || !ownerDocument || !ownerWindow) return
+
+    let animationFrame: number | null = null
+    const updatePosition = () => {
+      animationFrame = null
+      const rect = anchor.getBoundingClientRect()
+      setStyle(
+        calculatePopoverPosition(
+          rect,
+          { width: ownerWindow.innerWidth, height: ownerWindow.innerHeight },
+          align,
+        ),
+      )
     }
-    if (align === 'right') {
-      next.right = `${window.innerWidth - rect.right}px`
-    } else {
-      next.left = `${rect.left}px`
+    const schedulePositionUpdate = () => {
+      if (animationFrame !== null) return
+      if (typeof ownerWindow.requestAnimationFrame === 'function') {
+        animationFrame = ownerWindow.requestAnimationFrame(updatePosition)
+      } else {
+        updatePosition()
+      }
     }
-    setStyle(next)
+
+    updatePosition()
+    ownerWindow.addEventListener('resize', schedulePositionUpdate)
+    ownerWindow.addEventListener('scroll', schedulePositionUpdate)
+    ownerDocument.addEventListener('scroll', schedulePositionUpdate, true)
+    ownerWindow.visualViewport?.addEventListener(
+      'resize',
+      schedulePositionUpdate,
+    )
+    ownerWindow.visualViewport?.addEventListener(
+      'scroll',
+      schedulePositionUpdate,
+    )
+
+    const ResizeObserverConstructor = (
+      ownerWindow as Window & {
+        ResizeObserver?: typeof ResizeObserver
+      }
+    ).ResizeObserver
+    const resizeObserver = ResizeObserverConstructor
+      ? new ResizeObserverConstructor(schedulePositionUpdate)
+      : null
+    resizeObserver?.observe(anchor)
+
+    return () => {
+      if (animationFrame !== null) {
+        ownerWindow.cancelAnimationFrame(animationFrame)
+      }
+      resizeObserver?.disconnect()
+      ownerWindow.removeEventListener('resize', schedulePositionUpdate)
+      ownerWindow.removeEventListener('scroll', schedulePositionUpdate)
+      ownerDocument.removeEventListener('scroll', schedulePositionUpdate, true)
+      ownerWindow.visualViewport?.removeEventListener(
+        'resize',
+        schedulePositionUpdate,
+      )
+      ownerWindow.visualViewport?.removeEventListener(
+        'scroll',
+        schedulePositionUpdate,
+      )
+    }
   }, [open, anchorRef, align])
 
-  if (!open) return null
+  useLayoutEffect(() => {
+    const popover = popoverRef.current
+    if (!open || !popover) return
+    if (popover.contains(popover.ownerDocument.activeElement)) return
+    const initialTarget =
+      popover.querySelector<HTMLElement>('input:not(:disabled)') ??
+      popover.querySelector<HTMLElement>(CHECKED_MENU_ITEM_SELECTOR) ??
+      getEnabledMenuItems(popover)[0]
+    initialTarget?.focus()
+  }, [open, anchorRef])
+
+  const anchor = anchorRef.current
+  const ownerDocument = anchor?.ownerDocument
+  if (!open || !anchor || !ownerDocument?.defaultView || !ownerDocument.body) {
+    return null
+  }
+
   return createPortal(
     <div
+      ref={popoverRef}
       className="yolo-popover-surface yolo-popover-surface--default yolo-model-select-popover yolo-acp-select-popover"
       style={style}
+      onKeyDown={(event) => {
+        if (!isMenuNavigationKey(event.key)) return
+        if (
+          (event.key === 'Home' || event.key === 'End') &&
+          (event.target as HTMLElement).tagName === 'INPUT'
+        ) {
+          return
+        }
+        const items = getEnabledMenuItems(event.currentTarget)
+        const currentIndex = items.findIndex(
+          (item) =>
+            item === event.target || item.contains(event.target as Node),
+        )
+        const nextIndex = getMenuNavigationIndex(
+          event.key,
+          currentIndex,
+          items.length,
+        )
+        if (nextIndex < 0) return
+        event.preventDefault()
+        items[nextIndex]?.focus()
+      }}
     >
       {children}
     </div>,
-    document.body,
+    ownerDocument.body,
   )
 }
 
@@ -172,7 +334,14 @@ export const ConfigOptionSelect = memo(function ConfigOptionSelect({
         type="button"
         className="yolo-chat-input-model-select"
         data-state={open ? 'open' : 'closed'}
+        aria-haspopup="menu"
+        aria-expanded={open}
         onClick={() => setOpen(!open)}
+        onKeyDown={(event) => {
+          if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+          event.preventDefault()
+          setOpen(true)
+        }}
       >
         {icon}
         <div className="yolo-chat-input-model-select__label yolo-chat-input-model-select__model-name">
@@ -189,6 +358,7 @@ export const ConfigOptionSelect = memo(function ConfigOptionSelect({
               type="text"
               autoFocus
               placeholder={t('chat.searchModels', 'Search models…')}
+              aria-label={t('chat.searchModels', 'Search models…')}
               value={query}
               onChange={(event) => setQuery(event.target.value)}
             />
@@ -266,7 +436,14 @@ export const ModeSelect = memo(function ModeSelect({
         type="button"
         className="yolo-chat-input-model-select yolo-chat-mode-select"
         data-state={open ? 'open' : 'closed'}
+        aria-haspopup="menu"
+        aria-expanded={open}
         onClick={() => setOpen(!open)}
+        onKeyDown={(event) => {
+          if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+          event.preventDefault()
+          setOpen(true)
+        }}
       >
         {modeIcon(active.id, 12)}
         <div className="yolo-chat-input-model-select__label">

@@ -1,6 +1,6 @@
 {
   "name": "obsidian-openyolo",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "description": "Obsidian chat client powered by opencode via the Agent Client Protocol (ACP).",
   "main": "main.js",
   "scripts": {
@@ -19,6 +19,7 @@
     "lint:fix": "npm run prettier:write && eslint --cache --cache-location node_modules/.cache/.eslintcache --fix src __mocks__",
     "type:check": "tsc --noEmit --incremental --tsBuildInfoFile node_modules/.cache/tsconfig.typecheck.tsbuildinfo",
     "test": "jest --maxWorkers=50%",
+    "test:coverage": "jest --coverage --maxWorkers=50%",
     "test:watch": "jest --watch",
     "test:changed": "jest -o"
   },

@@ -4,15 +4,19 @@ import { ChatView } from './ChatView'
 import { syncAgentsMd } from './core/acp/agentsMd'
 import type { AcpSessionService } from './core/acp/service'
 import { getUiLanguage, loadLocale, t } from './i18n'
+import { sameConnectionSettings } from './settings/connectionSettings'
 import {
   DEFAULT_SETTINGS,
   YoloSettings,
   normalizeSettings,
 } from './settings/schema/setting.types'
+import { SerialWriter } from './settings/serialWriter'
 import { YoloSettingTab } from './settings/SettingTab'
 import { YOLO_ICON_ID, YOLO_ICON_SVG } from './yoloIcon'
 
 export const CHAT_VIEW_TYPE = 'yolo-lite-chat-view'
+
+const CONNECTION_RESTART_DEBOUNCE_MS = 750
 
 export default class YoloPlugin extends Plugin {
   settings: YoloSettings = DEFAULT_SETTINGS
@@ -20,15 +24,24 @@ export default class YoloPlugin extends Plugin {
   private settingsListeners = new Set<(settings: YoloSettings) => void>()
   private statusBarItem: HTMLElement | null = null
   private agentsMdSyncTimer: number | null = null
+  private connectionRestartTimer: number | null = null
   private settingTab: YoloSettingTab | null = null
   private unsubscribeActivityChange: (() => void) | null = null
+  private activationPromise: Promise<void> | null = null
+  private unloading = false
+  private readonly settingsWriter = new SerialWriter<YoloSettings>((settings) =>
+    this.saveData(settings),
+  )
 
   async onload() {
+    this.unloading = false
     await Promise.all([loadLocale('en'), loadLocale('zh')])
     await this.loadSettings()
 
     if (!Platform.isDesktopApp) {
-      new Notice('OpenYOLO requires Obsidian desktop.')
+      new Notice(
+        t('setup.desktopRequired', 'OpenYOLO requires Obsidian desktop.'),
+      )
       return
     }
 
@@ -38,14 +51,14 @@ export default class YoloPlugin extends Plugin {
       () => this.settings,
       this.manifest.version,
       (configId, value) => {
-        this.settings = {
+        const next = {
           ...this.settings,
           savedConfigSelections: {
             ...this.settings.savedConfigSelections,
             [configId]: value,
           },
         }
-        void this.saveData(this.settings)
+        void this.saveSettings(next)
       },
     )
     void this.syncAgentsMdNow()
@@ -79,6 +92,8 @@ export default class YoloPlugin extends Plugin {
   }
 
   onunload() {
+    this.unloading = true
+    this.cancelConnectionRestart()
     this.settingTab?.dispose()
     this.unsubscribeActivityChange?.()
 
@@ -94,6 +109,7 @@ export default class YoloPlugin extends Plugin {
     this.unsubscribeActivityChange = null
     this.sessionService = null
     this.statusBarItem = null
+    this.activationPromise = null
   }
 
   private updateStatusBar() {
@@ -112,8 +128,20 @@ export default class YoloPlugin extends Plugin {
   }
 
   async activateView() {
+    if (this.activationPromise) return this.activationPromise
+    const activation = this.activateViewInternal()
+    this.activationPromise = activation
+    try {
+      await activation
+    } finally {
+      if (this.activationPromise === activation) this.activationPromise = null
+    }
+  }
+
+  private async activateViewInternal() {
     const { workspace } = this.app
     const open = async () => {
+      if (this.unloading || !this.sessionService) return
       let leaf = workspace.getLeavesOfType(CHAT_VIEW_TYPE)[0]
       if (!leaf) {
         leaf = workspace.getRightLeaf(false) ?? workspace.getLeaf(true)
@@ -124,8 +152,10 @@ export default class YoloPlugin extends Plugin {
     if (workspace.layoutReady) {
       await open()
     } else {
-      workspace.onLayoutReady(() => {
-        void open()
+      await new Promise<void>((resolve) => {
+        workspace.onLayoutReady(() => {
+          void open().finally(resolve)
+        })
       })
     }
   }
@@ -145,12 +175,58 @@ export default class YoloPlugin extends Plugin {
   }
 
   async saveSettings(next: YoloSettings) {
+    const previous = this.settings
+    const connectionChanged = !sameConnectionSettings(previous, next)
+    if (connectionChanged) this.cancelConnectionRestart()
     this.settings = next
-    await this.saveData(next)
     for (const listener of this.settingsListeners) {
       listener(next)
     }
-    this.scheduleAgentsMdSync()
+    if (
+      previous.manageAgentsMd !== next.manageAgentsMd ||
+      previous.systemPrompt !== next.systemPrompt
+    ) {
+      this.scheduleAgentsMdSync()
+    }
+    await this.settingsWriter.write(next)
+    if (
+      connectionChanged &&
+      !this.unloading &&
+      sameConnectionSettings(this.settings, next)
+    ) {
+      this.scheduleConnectionRestart(next)
+    }
+  }
+
+  private scheduleConnectionRestart(settings: YoloSettings) {
+    this.cancelConnectionRestart()
+    this.connectionRestartTimer = window.setTimeout(() => {
+      this.connectionRestartTimer = null
+      if (this.unloading || !sameConnectionSettings(this.settings, settings)) {
+        return
+      }
+      void this.restartBackend()
+    }, CONNECTION_RESTART_DEBOUNCE_MS)
+  }
+
+  private cancelConnectionRestart() {
+    if (this.connectionRestartTimer === null) return
+    window.clearTimeout(this.connectionRestartTimer)
+    this.connectionRestartTimer = null
+  }
+
+  private async restartBackend() {
+    try {
+      await this.sessionService?.restart()
+    } catch (error) {
+      console.warn('[openyolo] failed to restart ACP backend', error)
+      new Notice(
+        t(
+          'settings.backendRestartFailed',
+          'Saved the connection settings, but restarting opencode failed.',
+        ),
+      )
+    }
   }
 
   private scheduleAgentsMdSync() {
