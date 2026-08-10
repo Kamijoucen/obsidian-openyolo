@@ -1,0 +1,454 @@
+import type { App } from 'obsidian'
+
+import type { ChatSessionState, TimelineEntry } from '../types/chat'
+
+import {
+  DEFAULT_CHAT_LOG_FOLDER,
+  buildRestoreBlocks,
+  chatLogDateFolder,
+  chatLogFilePath,
+  extractSessionId,
+  listConversationLogs,
+  normalizeChatLogFolder,
+  normalizeChatLogPath,
+  sanitizeChatLogFileName,
+  saveConversationLog,
+  serializeConversation,
+  shortSessionId,
+  writeConversationLog,
+} from './chatLog'
+
+function makeState(entries: TimelineEntry[]): ChatSessionState {
+  return {
+    sessionId: 'session-1',
+    title: '测试会话',
+    status: 'idle',
+    awaitingResponse: false,
+    error: null,
+    entries,
+    plan: [],
+    usage: null,
+    mode: null,
+    commands: [],
+    configOptions: [],
+    lastStopReason: null,
+  }
+}
+
+function userEntry(text: string): TimelineEntry {
+  return {
+    kind: 'user',
+    id: `u-${text}`,
+    messageId: null,
+    timestamp: 1,
+    text,
+    blocks: [],
+  }
+}
+
+function assistantEntry(text: string, reasoning = ''): TimelineEntry {
+  return {
+    kind: 'assistant',
+    id: `a-${text}`,
+    messageId: `m-${text}`,
+    timestamp: 2,
+    text,
+    reasoning,
+    blocks: [],
+    streaming: false,
+  }
+}
+
+function toolEntry(): TimelineEntry {
+  return {
+    kind: 'tool',
+    id: 'tool-1',
+    timestamp: 3,
+    toolCall: {
+      toolCallId: 'call-1',
+      title: 'Read',
+      kind: 'read',
+      status: 'completed',
+      content: [],
+      locations: [],
+      permission: null,
+    },
+  }
+}
+
+describe('normalizeChatLogPath', () => {
+  it('falls back to the default for blank input', () => {
+    expect(normalizeChatLogPath('')).toBe('YOLO/untitled.md')
+    expect(normalizeChatLogPath('   ')).toBe('YOLO/untitled.md')
+    expect(normalizeChatLogPath('///')).toBe('YOLO/untitled.md')
+  })
+
+  it('strips surrounding slashes and collapses dot segments', () => {
+    expect(normalizeChatLogPath('/notes/log.md/')).toBe('notes/log.md')
+    expect(normalizeChatLogPath('notes/./log.md')).toBe('notes/log.md')
+    expect(normalizeChatLogPath('notes//log.md')).toBe('notes/log.md')
+  })
+
+  it('rejects paths that escape the vault', () => {
+    expect(normalizeChatLogPath('../outside.md')).toBe('YOLO/untitled.md')
+    expect(normalizeChatLogPath('notes/../../outside.md')).toBe(
+      'YOLO/untitled.md',
+    )
+  })
+})
+
+describe('normalizeChatLogFolder', () => {
+  it('falls back to YOLO for blank or escaping input', () => {
+    expect(normalizeChatLogFolder('')).toBe(DEFAULT_CHAT_LOG_FOLDER)
+    expect(normalizeChatLogFolder('  ')).toBe(DEFAULT_CHAT_LOG_FOLDER)
+    expect(normalizeChatLogFolder('../outside')).toBe(DEFAULT_CHAT_LOG_FOLDER)
+  })
+
+  it('keeps nested folders and strips slashes', () => {
+    expect(normalizeChatLogFolder('/AI/logs/')).toBe('AI/logs')
+  })
+})
+
+describe('sanitizeChatLogFileName', () => {
+  it('replaces reserved characters and collapses whitespace', () => {
+    expect(sanitizeChatLogFileName('a/b:c*d?e"f<g>h|i')).toBe(
+      'a b c d e f g h i',
+    )
+    expect(sanitizeChatLogFileName('  多个   空格  ')).toBe('多个 空格')
+    expect(sanitizeChatLogFileName('a\tb\nc')).toBe('a b c')
+  })
+
+  it('trims leading and trailing dots', () => {
+    expect(sanitizeChatLogFileName('..秘密.')).toBe('秘密')
+  })
+
+  it('truncates long titles and falls back to untitled', () => {
+    expect(sanitizeChatLogFileName('长'.repeat(200))).toHaveLength(80)
+    expect(sanitizeChatLogFileName('')).toBe('untitled')
+    expect(sanitizeChatLogFileName('  /:  ')).toBe('untitled')
+  })
+})
+
+describe('chatLogDateFolder', () => {
+  it('formats local dates as YYYY-MM-DD with zero padding', () => {
+    expect(chatLogDateFolder(new Date(2026, 0, 5))).toBe('2026-01-05')
+    expect(chatLogDateFolder(new Date(2026, 11, 31))).toBe('2026-12-31')
+  })
+})
+
+describe('chatLogFilePath', () => {
+  const day = new Date(2026, 7, 10)
+
+  it('builds folder/date/title.md paths', () => {
+    expect(chatLogFilePath('YOLO', '整理笔记', day)).toBe(
+      'YOLO/2026-08-10/整理笔记.md',
+    )
+    expect(chatLogFilePath('AI/logs', 'a/b', day)).toBe(
+      'AI/logs/2026-08-10/a b.md',
+    )
+    expect(chatLogFilePath('', '', day)).toBe('YOLO/2026-08-10/untitled.md')
+  })
+})
+
+describe('serializeConversation', () => {
+  it('returns an empty string when there is nothing to save', () => {
+    expect(serializeConversation(makeState([]))).toBe('')
+    expect(serializeConversation(makeState([toolEntry()]))).toBe('')
+    expect(
+      serializeConversation(makeState([userEntry('   '), assistantEntry('')])),
+    ).toBe('')
+  })
+
+  it('serializes user and assistant text in order, skipping tool calls and reasoning', () => {
+    const markdown = serializeConversation(
+      makeState([
+        userEntry('帮我整理这篇笔记'),
+        assistantEntry('好的，已整理完成。', '隐藏的思考过程'),
+        toolEntry(),
+        userEntry('再加一个标签'),
+        assistantEntry('已添加。'),
+      ]),
+    )
+    expect(markdown).toContain('Auto-generated by OpenYOLO')
+    expect(markdown).toContain('<!-- openyolo-session: session-1 -->')
+    expect(markdown).toContain('- Session: 测试会话')
+    expect(markdown).toContain('## User\n\n帮我整理这篇笔记')
+    expect(markdown).toContain('## Assistant\n\n好的，已整理完成。')
+    expect(markdown).toContain('## User\n\n再加一个标签')
+    expect(markdown).not.toContain('隐藏的思考过程')
+    expect(markdown).not.toContain('Read')
+    expect(markdown.indexOf('帮我整理这篇笔记')).toBeLessThan(
+      markdown.indexOf('好的，已整理完成。'),
+    )
+    expect(markdown.endsWith('\n')).toBe(true)
+  })
+})
+
+describe('extractSessionId', () => {
+  it('parses the session marker and tolerates its absence', () => {
+    expect(extractSessionId('a\n<!-- openyolo-session: ses_abc -->\nb')).toBe(
+      'ses_abc',
+    )
+    expect(extractSessionId('no marker here')).toBeNull()
+    expect(extractSessionId('<!-- openyolo-session:   -->')).toBeNull()
+  })
+})
+
+describe('shortSessionId', () => {
+  it('keeps the last 8 alphanumeric characters', () => {
+    expect(shortSessionId('ses_0153776c3ffe5GKDxm1nEVHnZO')).toBe(
+      'xm1nEVHnZO'.slice(-8),
+    )
+    expect(shortSessionId('abc')).toBe('abc')
+  })
+})
+
+type FakeFile = { path: string }
+
+type FakeVault = {
+  files: Map<string, string>
+  folders: Set<string>
+  getFileByPath: (path: string) => FakeFile | null
+  getAbstractFileByPath: (path: string) => FakeFile | null
+  process: (file: FakeFile, fn: (data: string) => string) => Promise<string>
+  create: (path: string, data: string) => Promise<FakeFile>
+  createFolder: (path: string) => Promise<FakeFile>
+  adapter: {
+    read: (path: string) => Promise<string>
+    list: (path: string) => Promise<{ files: string[]; folders: string[] }>
+    stat: (path: string) => Promise<{
+      type: string
+      ctime: number
+      mtime: number
+      size: number
+    } | null>
+  }
+}
+
+function makeVault(): FakeVault {
+  const files = new Map<string, string>()
+  const folders = new Set<string>()
+  return {
+    files,
+    folders,
+    getFileByPath: (path: string) => (files.has(path) ? { path } : null),
+    getAbstractFileByPath: (path: string) =>
+      files.has(path) || folders.has(path) ? { path } : null,
+    process: (file: FakeFile, fn: (data: string) => string) => {
+      files.set(file.path, fn(files.get(file.path) ?? ''))
+      return Promise.resolve('')
+    },
+    create: (path: string, data: string) => {
+      if (files.has(path)) throw new Error('already exists')
+      files.set(path, data)
+      return Promise.resolve({ path })
+    },
+    createFolder: (path: string) => {
+      folders.add(path)
+      return Promise.resolve({ path })
+    },
+    adapter: {
+      read: (path: string) => {
+        const content = files.get(path)
+        return content === undefined
+          ? Promise.reject(new Error('missing'))
+          : Promise.resolve(content)
+      },
+      list: (folder: string) => {
+        const prefix = folder ? `${folder}/` : ''
+        const direct: string[] = []
+        const subFolders = new Set<string>()
+        for (const path of files.keys()) {
+          if (!path.startsWith(prefix)) continue
+          const rest = path.slice(prefix.length)
+          if (rest.includes('/')) {
+            subFolders.add(`${prefix}${rest.split('/')[0]}`)
+          } else {
+            direct.push(path)
+          }
+        }
+        return Promise.resolve({ files: direct, folders: [...subFolders] })
+      },
+      stat: (path: string) =>
+        files.has(path)
+          ? Promise.resolve({ type: 'file', ctime: 1, mtime: 1, size: 1 })
+          : Promise.resolve(null),
+    },
+  }
+}
+
+function asApp(vault: object): App {
+  return { vault } as unknown as App
+}
+
+describe('saveConversationLog', () => {
+  const day = new Date(2026, 7, 10)
+
+  it('returns null when there is nothing to save', async () => {
+    const vault = makeVault()
+    await expect(
+      saveConversationLog(asApp(vault), 'YOLO', makeState([]), day),
+    ).resolves.toBeNull()
+    expect(vault.files.size).toBe(0)
+  })
+
+  it('writes a new file under the date folder named by title', async () => {
+    const vault = makeVault()
+    const path = await saveConversationLog(
+      asApp(vault),
+      'YOLO',
+      makeState([userEntry('你好'), assistantEntry('你好！')]),
+      day,
+    )
+    expect(path).toBe('YOLO/2026-08-10/测试会话.md')
+    expect(vault.files.get(path!)).toContain(
+      '<!-- openyolo-session: session-1 -->',
+    )
+  })
+
+  it('overwrites the existing file matched by session id, even across dates and renamed titles', async () => {
+    const vault = makeVault()
+    const first = await saveConversationLog(
+      asApp(vault),
+      'YOLO',
+      makeState([userEntry('第一条')]),
+      new Date(2026, 7, 9),
+    )
+    expect(first).toBe('YOLO/2026-08-09/测试会话.md')
+
+    const renamed = {
+      ...makeState([userEntry('第一条'), assistantEntry('更新')]),
+      title: '新标题',
+    }
+    const second = await saveConversationLog(asApp(vault), 'YOLO', renamed, day)
+    expect(second).toBe(first)
+    expect(vault.files.get(first!)).toContain('更新')
+    expect(vault.files.get(first!)).toContain('- Session: 新标题')
+    expect(vault.files.has('YOLO/2026-08-10/新标题.md')).toBe(false)
+  })
+
+  it('appends the session id suffix when the title path is taken by another session', async () => {
+    const vault = makeVault()
+    await saveConversationLog(
+      asApp(vault),
+      'YOLO',
+      makeState([userEntry('会话一')]),
+      day,
+    )
+    const other = {
+      ...makeState([userEntry('会话二')]),
+      sessionId: 'session-2',
+    }
+    const path = await saveConversationLog(asApp(vault), 'YOLO', other, day)
+    expect(path).toBe('YOLO/2026-08-10/测试会话-session2.md')
+    expect(vault.files.get('YOLO/2026-08-10/测试会话.md')).toContain('会话一')
+    expect(vault.files.get(path!)).toContain('会话二')
+  })
+})
+
+describe('writeConversationLog', () => {
+  it('creates parent folders and writes a new file', async () => {
+    const vault = makeVault()
+    await writeConversationLog(asApp(vault), 'notes/ai/log.md', '内容')
+    expect(vault.files.get('notes/ai/log.md')).toBe('内容')
+    expect(vault.folders.has('notes')).toBe(true)
+    expect(vault.folders.has('notes/ai')).toBe(true)
+  })
+
+  it('overwrites an existing file in full', async () => {
+    const vault = makeVault()
+    await writeConversationLog(asApp(vault), 'log.md', '旧内容')
+    await writeConversationLog(asApp(vault), 'log.md', '新内容')
+    expect(vault.files.get('log.md')).toBe('新内容')
+  })
+
+  it('rejects when the path is occupied by a folder', async () => {
+    const vault = makeVault()
+    vault.folders.add('log.md')
+    await expect(
+      writeConversationLog(asApp(vault), 'log.md', '内容'),
+    ).rejects.toThrow('not a file')
+  })
+})
+
+describe('listConversationLogs', () => {
+  function appWithAdapter(adapter: {
+    list: (path: string) => Promise<{ files: string[]; folders: string[] }>
+    stat: (path: string) => Promise<{
+      type: string
+      ctime: number
+      mtime: number
+      size: number
+    } | null>
+  }): App {
+    return { vault: { adapter } } as unknown as App
+  }
+
+  it('returns markdown files from the root and date subfolders, newest first', async () => {
+    const app = appWithAdapter({
+      list: (path) => {
+        if (path === 'YOLO') {
+          return Promise.resolve({
+            files: ['YOLO/loose.md', 'YOLO/skip.txt'],
+            folders: ['YOLO/2026-08-09', 'YOLO/2026-08-10'],
+          })
+        }
+        if (path === 'YOLO/2026-08-09') {
+          return Promise.resolve({
+            files: ['YOLO/2026-08-09/old.md'],
+            folders: [],
+          })
+        }
+        if (path === 'YOLO/2026-08-10') {
+          return Promise.resolve({
+            files: ['YOLO/2026-08-10/new.md'],
+            folders: [],
+          })
+        }
+        return Promise.reject(new Error('missing'))
+      },
+      stat: (path) =>
+        Promise.resolve({
+          type: 'file',
+          ctime: 1,
+          mtime: path.includes('new') ? 30 : path.includes('loose') ? 20 : 10,
+          size: 1,
+        }),
+    })
+    await expect(listConversationLogs(app, 'YOLO')).resolves.toEqual([
+      { path: 'YOLO/2026-08-10/new.md', name: 'new', mtime: 30 },
+      { path: 'YOLO/loose.md', name: 'loose', mtime: 20 },
+      { path: 'YOLO/2026-08-09/old.md', name: 'old', mtime: 10 },
+    ])
+  })
+
+  it('returns an empty list when the folder does not exist', async () => {
+    const app = appWithAdapter({
+      list: () => Promise.reject(new Error('missing')),
+      stat: () => Promise.resolve(null),
+    })
+    await expect(listConversationLogs(app, 'YOLO')).resolves.toEqual([])
+  })
+})
+
+describe('buildRestoreBlocks', () => {
+  it('builds a text block plus an embedded text resource', () => {
+    const blocks = buildRestoreBlocks(
+      '恢复上下文',
+      '笔记内容',
+      'openyolo/log.md',
+      '/vault',
+    )
+    expect(blocks).toHaveLength(2)
+    expect(blocks[0]).toEqual({ type: 'text', text: '恢复上下文' })
+    const resource = blocks[1]
+    expect(resource.type).toBe('resource')
+    if (resource.type !== 'resource') return
+    expect('text' in resource.resource && resource.resource.text).toBe(
+      '笔记内容',
+    )
+    expect(resource.resource.mimeType).toBe('text/plain')
+    expect(resource.resource.uri.startsWith('file://')).toBe(true)
+    expect(resource.resource.uri).toContain('/vault/openyolo/log.md')
+  })
+})

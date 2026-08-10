@@ -57,6 +57,14 @@ export type TranslationKeys = {
     authRequired: string
     authRequiredHint: string
     sessionLoading: string
+    saveToNote: string
+    saveToNoteEmpty: string
+    saveToNoteSuccess: string
+    saveToNoteFailed: string
+    noteHistorySection: string
+    sessionHistorySection: string
+    restorePrompt: string
+    restoreFailed: string
   }
   setup: {
     desktopRequired: string
@@ -94,6 +102,8 @@ export type TranslationKeys = {
     showReasoningDesc: string
     debugLog: string
     debugLogDesc: string
+    chatLogFolder: string
+    chatLogFolderDesc: string
   }
   statusBar: {
     running: string

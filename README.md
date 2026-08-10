@@ -14,6 +14,7 @@ OpenYOLO is an AI note assistant plugin for Obsidian (desktop only). The plugin 
 - **Model & effort selection**: searchable list of all models configured in opencode; selections are persisted and restored across restarts (falls back to the first model if the saved one disappears)
 - **Slash commands**: type `/` to invoke opencode commands / skills
 - **History**: automatically restores the most recent session; browse all persisted sessions
+- **Conversation save & restore (lightweight)**: a save button in the header manually exports the current conversation (user/assistant text only) to a vault note — no real-time sync, each save overwrites the same file for the same session. Notes are grouped under a configurable folder (default `YOLO/<YYYY-MM-DD>/<title>.md`), deduplicated by an embedded session-id marker. Saved notes appear alongside opencode sessions in the history list; picking one starts a new chat that automatically restores the context with a built-in prompt — useful for continuing a conversation on another device
 - **Note-assistant prompt**: can maintain a managed block in the vault-root `AGENTS.md` to guide opencode toward note-centric work; this opt-in feature is disabled by default and its prompt is editable in settings
 
 ## How it works
@@ -28,6 +29,7 @@ Obsidian plugin (ACP client)  ──stdio / JSON-RPC──▶  opencode acp (sub
 - File access (`fs/read_text_file` / `fs/write_text_file`) is implemented through the vault adapter. It validates lexical and real paths, rejects symlinks that escape the vault, and revalidates parent directories before writes. This is still not a complete sandbox: opencode runs as a trusted local subprocess.
 - `AGENTS.md` management is opt-in. When enabled, the plugin atomically updates only its marked block and preserves content outside that block.
 - Permission requests (`session/request_permission`) are routed to in-plugin approval cards
+- Conversation saves are plain Markdown notes with an `openyolo-session` metadata marker, so re-saving the same session overwrites its previous file even after the title changes; restoring embeds the note content directly in the prompt (no tool calls needed)
 - The UI is a React-rendered ItemView; `session/update` notifications are mapped to immutable state for streaming rendering
 
 ## Prerequisites

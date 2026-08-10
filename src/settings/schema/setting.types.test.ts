@@ -2,6 +2,7 @@ import {
   DEFAULT_SYSTEM_PROMPT_EN,
   DEFAULT_SYSTEM_PROMPT_ZH,
 } from '../../core/acp/agentsMd'
+import { DEFAULT_CHAT_LOG_FOLDER } from '../../core/chatLog'
 
 import { normalizeSettings } from './setting.types'
 
@@ -53,5 +54,20 @@ describe('normalizeSettings system prompt language', () => {
     expect(normalizeSettings({ systemPrompt: '  ' }, 'en')).toMatchObject({
       systemPrompt: DEFAULT_SYSTEM_PROMPT_EN,
     })
+  })
+
+  it('normalizes the conversation log folder', () => {
+    expect(normalizeSettings(undefined)).toMatchObject({
+      conversationLogFolder: DEFAULT_CHAT_LOG_FOLDER,
+    })
+    expect(normalizeSettings({ conversationLogFolder: '  ' })).toMatchObject({
+      conversationLogFolder: DEFAULT_CHAT_LOG_FOLDER,
+    })
+    expect(normalizeSettings({ conversationLogFolder: 42 })).toMatchObject({
+      conversationLogFolder: DEFAULT_CHAT_LOG_FOLDER,
+    })
+    expect(
+      normalizeSettings({ conversationLogFolder: 'AI/history' }),
+    ).toMatchObject({ conversationLogFolder: 'AI/history' })
   })
 })

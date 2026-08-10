@@ -59,6 +59,7 @@ const SETTINGS: YoloSettings = {
   attachCurrentNote: true,
   systemPrompt: '',
   manageAgentsMd: false,
+  conversationLogFolder: 'YOLO',
   savedConfigSelections: {},
 }
 

@@ -57,6 +57,15 @@ export const en: TranslationKeys = {
     authRequired: 'opencode is not authenticated',
     authRequiredHint: 'Run `opencode auth login` in a terminal, then retry.',
     sessionLoading: 'Loading session…',
+    saveToNote: 'Save conversation to note',
+    saveToNoteEmpty: 'Nothing to save yet.',
+    saveToNoteSuccess: 'Conversation saved to note.',
+    saveToNoteFailed: 'Failed to save conversation to note.',
+    noteHistorySection: 'Saved notes',
+    sessionHistorySection: 'opencode sessions',
+    restorePrompt:
+      'The attached note contains our previous conversation history (exported by OpenYOLO). Read it fully and treat it as our restored conversation context: understand what we discussed, the conclusions, and any unfinished items. Then briefly summarize the context you recovered in one or two sentences and wait for my instructions. Do not resume any unfinished tasks from the record unless I explicitly ask.',
+    restoreFailed: 'Failed to restore conversation from note.',
   },
   setup: {
     desktopRequired: 'OpenYOLO requires Obsidian desktop.',
@@ -104,6 +113,9 @@ export const en: TranslationKeys = {
     debugLog: 'Debug logging',
     debugLogDesc:
       'Log sanitized ACP metadata and opencode stderr summaries to the console.',
+    chatLogFolder: 'Conversation log folder',
+    chatLogFolderDesc:
+      'Vault folder used when you manually save a conversation. Saves are grouped into date subfolders (YYYY-MM-DD) and the conversation title becomes the file name, so saving the same conversation overwrites the same file. Saved notes appear in the history list and can restore conversation context across devices.',
   },
   statusBar: {
     running: 'OpenYOLO: running',

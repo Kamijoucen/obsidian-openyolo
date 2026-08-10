@@ -1,9 +1,11 @@
 import { Notice } from 'obsidian'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
+import { useApp } from '../../contexts/app-context'
 import { useLanguage } from '../../contexts/language-context'
 import { useSessionService } from '../../contexts/service-context'
 import type { AvailabilityState } from '../../core/acp/service'
+import { buildRestoreBlocks, vaultBasePath } from '../../core/chatLog'
 import type { HistorySessionInfo } from '../../types/chat'
 
 import HeaderBar from './HeaderBar'
@@ -16,6 +18,7 @@ type ChatAppProps = {
 
 export default function ChatApp({ onOpenSettings }: ChatAppProps) {
   const service = useSessionService()
+  const app = useApp()
   const { t } = useLanguage()
   const [tabId, setTabId] = useState<string | null>(null)
   const activeTabRef = useRef<string | null>(null)
@@ -129,6 +132,37 @@ export default function ChatApp({ onOpenSettings }: ChatAppProps) {
     activateSingleTab(service.createTab())
   }, [activateSingleTab, service])
 
+  const handleRestoreFromNote = useCallback(
+    (notePath: string) => {
+      switchSequenceRef.current += 1
+      targetSessionRef.current = null
+      const restoreText = t('chat.restorePrompt')
+      void app.vault.adapter
+        .read(notePath)
+        .then((noteText) => {
+          if (!mountedRef.current) return undefined
+          const blocks = buildRestoreBlocks(
+            restoreText,
+            noteText,
+            notePath,
+            vaultBasePath(app),
+          )
+          const id = service.createTab()
+          activateSingleTab(id)
+          return service.submit(id, restoreText, blocks)
+        })
+        .then((result) => {
+          if (result && result !== 'accepted' && mountedRef.current) {
+            new Notice(t('chat.restoreFailed'))
+          }
+        })
+        .catch(() => {
+          if (mountedRef.current) new Notice(t('chat.restoreFailed'))
+        })
+    },
+    [activateSingleTab, app, service, t],
+  )
+
   const handleOpenHistory = useCallback(
     (session: HistorySessionInfo) => {
       const sequence = ++switchSequenceRef.current
@@ -167,6 +201,7 @@ export default function ChatApp({ onOpenSettings }: ChatAppProps) {
         tabId={tabId}
         onNew={handleNew}
         onOpenHistory={handleOpenHistory}
+        onRestoreFromNote={handleRestoreFromNote}
       />
       <SetupBanner
         availability={availability}

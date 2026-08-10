@@ -73,7 +73,9 @@ export const UserEntryView = memo(function UserEntryView({
   entry: ChatUserEntry
 }) {
   const images = entry.blocks.filter((block) => block.type === 'image')
-  const links = entry.blocks.filter((block) => block.type === 'resource_link')
+  const links = entry.blocks.filter(
+    (block) => block.type === 'resource_link' || block.type === 'resource',
+  )
   return (
     <div className="yolo-chat-messages-user">
       <div className="yolo-chat-user-input-wrapper--compact">
@@ -83,13 +85,31 @@ export const UserEntryView = memo(function UserEntryView({
           ) : null}
           {links.length > 0 ? (
             <div className="yolo-acp-user-links">
-              {links.map((block, index) =>
-                block.type === 'resource_link' ? (
-                  <span key={index} className="yolo-acp-user-link-chip">
-                    {block.name || block.uri}
-                  </span>
-                ) : null,
-              )}
+              {links.map((block, index) => {
+                if (block.type === 'resource_link') {
+                  return (
+                    <span key={index} className="yolo-acp-user-link-chip">
+                      {block.name || block.uri}
+                    </span>
+                  )
+                }
+                if (block.type === 'resource') {
+                  const uri = block.resource.uri
+                  const tail = uri.split('/').pop() || uri
+                  let label = tail
+                  try {
+                    label = decodeURIComponent(tail)
+                  } catch {
+                    // keep the raw tail when the URI is malformed
+                  }
+                  return (
+                    <span key={index} className="yolo-acp-user-link-chip">
+                      {label}
+                    </span>
+                  )
+                }
+                return null
+              })}
             </div>
           ) : null}
           {images.length > 0 ? (

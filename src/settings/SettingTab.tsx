@@ -2,6 +2,7 @@ import { App, PluginSettingTab, Setting } from 'obsidian'
 import type { SettingDefinitionItem } from 'obsidian'
 
 import { getDefaultSystemPrompt } from '../core/acp/agentsMd'
+import { DEFAULT_CHAT_LOG_FOLDER } from '../core/chatLog'
 import { getUiLanguage, t } from '../i18n'
 import type YoloPlugin from '../main'
 
@@ -100,6 +101,15 @@ export class YoloSettingTab extends PluginSettingTab {
             control: { type: 'toggle', key: 'manageAgentsMd' },
           },
           {
+            name: t('settings.chatLogFolder'),
+            desc: t('settings.chatLogFolderDesc'),
+            control: {
+              type: 'text',
+              key: 'conversationLogFolder',
+              placeholder: DEFAULT_CHAT_LOG_FOLDER,
+            },
+          },
+          {
             name: t('settings.systemPrompt'),
             desc: t('settings.systemPromptDesc'),
             render: (setting) => this.renderSystemPrompt(setting),
@@ -146,6 +156,10 @@ export class YoloSettingTab extends PluginSettingTab {
     switch (key) {
       case 'opencodePath':
         next.opencodePath = String(value).trim()
+        break
+      case 'conversationLogFolder':
+        next.conversationLogFolder =
+          String(value).trim() || DEFAULT_CHAT_LOG_FOLDER
         break
       case 'opencodeArgs':
         next.opencodeArgs = String(value)

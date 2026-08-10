@@ -3,6 +3,7 @@ import {
   getDefaultSystemPrompt,
 } from '../../core/acp/agentsMd'
 import type { PromptLanguage } from '../../core/acp/agentsMd'
+import { DEFAULT_CHAT_LOG_FOLDER } from '../../core/chatLog'
 
 export type ChatMode = 'plan' | 'build'
 
@@ -16,6 +17,8 @@ export type YoloSettings = {
   attachCurrentNote: boolean
   systemPrompt: string
   manageAgentsMd: boolean
+  /** 对话记录笔记的库内文件夹，保存时以对话标题为文件名整体覆盖 */
+  conversationLogFolder: string
   /** 记录用户选择的模型/思考强度等 configOption（configId → value），跨会话与重启恢复 */
   savedConfigSelections: Record<string, string>
 }
@@ -30,6 +33,7 @@ export const DEFAULT_SETTINGS: YoloSettings = {
   attachCurrentNote: true,
   systemPrompt: DEFAULT_SYSTEM_PROMPT_ZH,
   manageAgentsMd: false,
+  conversationLogFolder: DEFAULT_CHAT_LOG_FOLDER,
   savedConfigSelections: {},
 }
 
@@ -79,6 +83,11 @@ export function normalizeSettings(
       typeof source.manageAgentsMd === 'boolean'
         ? source.manageAgentsMd
         : DEFAULT_SETTINGS.manageAgentsMd,
+    conversationLogFolder:
+      typeof source.conversationLogFolder === 'string' &&
+      source.conversationLogFolder.trim()
+        ? source.conversationLogFolder
+        : DEFAULT_SETTINGS.conversationLogFolder,
     savedConfigSelections:
       typeof source.savedConfigSelections === 'object' &&
       source.savedConfigSelections !== null &&
