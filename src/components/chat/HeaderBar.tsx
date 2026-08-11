@@ -1,5 +1,4 @@
-import { FileText, History, Plus, Save } from 'lucide-react'
-import { Notice } from 'obsidian'
+import { FileText, History, Plus } from 'lucide-react'
 import {
   memo,
   useCallback,
@@ -15,7 +14,7 @@ import { useApp } from '../../contexts/app-context'
 import { useLanguage } from '../../contexts/language-context'
 import { useSessionService } from '../../contexts/service-context'
 import { useSettings } from '../../contexts/settings-context'
-import { listConversationLogs, saveConversationLog } from '../../core/chatLog'
+import { listConversationLogs } from '../../core/chatLog'
 import type { ConversationLogInfo } from '../../core/chatLog'
 import type { HistorySessionInfo } from '../../types/chat'
 
@@ -306,50 +305,6 @@ function HeaderTitle({ tabId }: { tabId: string | null }) {
   )
 }
 
-function SaveToNoteButton({ tabId }: { tabId: string | null }) {
-  const service = useSessionService()
-  const app = useApp()
-  const { settings } = useSettings()
-  const { t } = useLanguage()
-  const [saving, setSaving] = useState(false)
-
-  const handleSave = useCallback(async () => {
-    if (!tabId || saving) return
-    const state = service.getState(tabId)
-    if (!state) {
-      new Notice(t('chat.saveToNoteEmpty'))
-      return
-    }
-    setSaving(true)
-    try {
-      const path = await saveConversationLog(
-        app,
-        settings.conversationLogFolder,
-        state,
-      )
-      new Notice(path ? t('chat.saveToNoteSuccess') : t('chat.saveToNoteEmpty'))
-    } catch (error) {
-      console.warn('[openyolo] failed to save conversation log', error)
-      new Notice(t('chat.saveToNoteFailed'))
-    } finally {
-      setSaving(false)
-    }
-  }, [app, saving, service, settings.conversationLogFolder, t, tabId])
-
-  return (
-    <button
-      type="button"
-      className="clickable-icon"
-      title={t('chat.saveToNote')}
-      aria-label={t('chat.saveToNote')}
-      disabled={!tabId || saving}
-      onClick={() => void handleSave()}
-    >
-      <Save size={16} />
-    </button>
-  )
-}
-
 type HeaderBarProps = {
   tabId: string | null
   onNew: () => void
@@ -368,7 +323,6 @@ function HeaderBar({
     <div className="yolo-acp-header">
       <HeaderTitle tabId={tabId} />
       <div className="yolo-acp-header-actions">
-        <SaveToNoteButton tabId={tabId} />
         <HistoryDropdown
           onOpenHistory={onOpenHistory}
           onRestoreFromNote={onRestoreFromNote}

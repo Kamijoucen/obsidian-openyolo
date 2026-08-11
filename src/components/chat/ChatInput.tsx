@@ -2,7 +2,7 @@ import type {
   AvailableCommand,
   SessionConfigOption,
 } from '@agentclientprotocol/sdk'
-import { ArrowUp, FileText, Paperclip, Square, X } from 'lucide-react'
+import { ArrowUp, FileText, Paperclip, Save, Square, X } from 'lucide-react'
 import { TFile } from 'obsidian'
 import { KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react'
 
@@ -54,6 +54,8 @@ type ChatInputProps = {
     notes: AttachedNote[],
   ) => Promise<SubmitResult>
   onCancel: () => void
+  savingToNote?: boolean
+  onSaveToNote?: () => void
 }
 
 function createAbortError(): Error {
@@ -173,6 +175,8 @@ function ChatInput({
   onConfigOptionChange,
   onSubmit,
   onCancel,
+  savingToNote = false,
+  onSaveToNote,
 }: ChatInputProps) {
   const { t } = useLanguage()
   const { settings } = useSettings()
@@ -695,6 +699,18 @@ function ChatInput({
             available={mode?.available ?? []}
             onChange={onModeChange}
           />
+          {onSaveToNote ? (
+            <button
+              type="button"
+              className="yolo-chat-toolbar-icon-button"
+              title={t('chat.saveToNote')}
+              aria-label={t('chat.saveToNote')}
+              disabled={savingToNote}
+              onClick={onSaveToNote}
+            >
+              <Save size={14} />
+            </button>
+          ) : null}
         </div>
         <div className="yolo-chat-user-input-toolbar__right">
           {effortOption ? (

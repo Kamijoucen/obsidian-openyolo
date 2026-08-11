@@ -3,11 +3,14 @@ import { pathToFileURL } from 'url'
 
 import type { ContentBlock } from '@agentclientprotocol/sdk'
 import type { App } from 'obsidian'
+import { Notice } from 'obsidian'
 import { memo, useCallback, useEffect, useState } from 'react'
 
 import { useApp } from '../../contexts/app-context'
 import { useLanguage } from '../../contexts/language-context'
 import { useSessionService } from '../../contexts/service-context'
+import { useSettings } from '../../contexts/settings-context'
+import { saveConversationWithMap } from '../../core/sessionMap'
 import type { ChatSessionState } from '../../types/chat'
 
 import ChatInput, { AttachedNote, InputImage } from './ChatInput'
@@ -91,9 +94,12 @@ type SessionPanelProps = {
 function SessionPanel({ tabId }: SessionPanelProps) {
   const service = useSessionService()
   const app = useApp()
+  const { settings } = useSettings()
+  const { t } = useLanguage()
   const [state, setState] = useState<ChatSessionState | null>(() =>
     service.getState(tabId),
   )
+  const [savingToNote, setSavingToNote] = useState(false)
 
   useEffect(() => {
     setState(service.getState(tabId))
@@ -146,6 +152,27 @@ function SessionPanel({ tabId }: SessionPanelProps) {
     [service, tabId],
   )
 
+  const handleSaveToNote = useCallback(() => {
+    if (savingToNote) return
+    const current = service.getState(tabId)
+    if (!current) {
+      new Notice(t('chat.saveToNoteEmpty'))
+      return
+    }
+    setSavingToNote(true)
+    void saveConversationWithMap(app, settings.conversationLogFolder, current)
+      .then((path) => {
+        new Notice(
+          path ? t('chat.saveToNoteSuccess') : t('chat.saveToNoteEmpty'),
+        )
+      })
+      .catch((error) => {
+        console.warn('[openyolo] failed to save conversation log', error)
+        new Notice(t('chat.saveToNoteFailed'))
+      })
+      .finally(() => setSavingToNote(false))
+  }, [app, savingToNote, service, settings.conversationLogFolder, t, tabId])
+
   if (!state) return null
   const running = ['preparing', 'running', 'cancelling'].includes(state.status)
 
@@ -165,6 +192,8 @@ function SessionPanel({ tabId }: SessionPanelProps) {
           onConfigOptionChange={handleConfigOptionChange}
           onSubmit={handleSubmit}
           onCancel={handleCancel}
+          savingToNote={savingToNote}
+          onSaveToNote={handleSaveToNote}
         />
       </div>
     </div>

@@ -1,6 +1,6 @@
 import type { ToolCallContent } from '@agentclientprotocol/sdk'
 
-import type { ToolCallState } from '../../types/chat'
+import type { ToolCallState } from '../types/chat'
 
 type UnknownRecord = Record<string, unknown>
 

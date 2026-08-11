@@ -5,7 +5,12 @@ import { useApp } from '../../contexts/app-context'
 import { useLanguage } from '../../contexts/language-context'
 import { useSessionService } from '../../contexts/service-context'
 import type { AvailabilityState } from '../../core/acp/service'
-import { buildRestoreBlocks, vaultBasePath } from '../../core/chatLog'
+import {
+  buildRestoreBlocks,
+  extractSessionId,
+  vaultBasePath,
+} from '../../core/chatLog'
+import { recordSessionMapping } from '../../core/sessionMap'
 import type { HistorySessionInfo } from '../../types/chat'
 
 import HeaderBar from './HeaderBar'
@@ -137,28 +142,46 @@ export default function ChatApp({ onOpenSettings }: ChatAppProps) {
       switchSequenceRef.current += 1
       targetSessionRef.current = null
       const restoreText = t('chat.restorePrompt')
-      void app.vault.adapter
-        .read(notePath)
-        .then((noteText) => {
-          if (!mountedRef.current) return undefined
-          const blocks = buildRestoreBlocks(
-            restoreText,
-            noteText,
-            notePath,
-            vaultBasePath(app),
-          )
-          const id = service.createTab()
-          activateSingleTab(id)
-          return service.submit(id, restoreText, blocks)
-        })
-        .then((result) => {
-          if (result && result !== 'accepted' && mountedRef.current) {
-            new Notice(t('chat.restoreFailed'))
-          }
-        })
-        .catch(() => {
+      void (async () => {
+        let noteText: string
+        try {
+          noteText = await app.vault.adapter.read(notePath)
+        } catch {
           if (mountedRef.current) new Notice(t('chat.restoreFailed'))
-        })
+          return
+        }
+        if (!mountedRef.current) return
+        const blocks = buildRestoreBlocks(
+          restoreText,
+          noteText,
+          notePath,
+          vaultBasePath(app),
+        )
+        const id = service.createTab()
+        activateSingleTab(id)
+        let result: string
+        try {
+          result = await service.submit(id, restoreText, blocks)
+        } catch {
+          result = 'failed'
+        }
+        if (result !== 'accepted') {
+          if (mountedRef.current) new Notice(t('chat.restoreFailed'))
+          return
+        }
+        const newSessionId = service.getState(id)?.sessionId
+        const originalId = extractSessionId(noteText)
+        if (newSessionId && originalId && newSessionId !== originalId) {
+          try {
+            await recordSessionMapping(vaultBasePath(app), newSessionId, {
+              id: originalId,
+              path: notePath,
+            })
+          } catch (error) {
+            console.warn('[openyolo] failed to record session mapping', error)
+          }
+        }
+      })()
     },
     [activateSingleTab, app, service, t],
   )

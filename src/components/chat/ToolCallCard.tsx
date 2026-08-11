@@ -13,13 +13,13 @@ import {
 import { memo, useState } from 'react'
 
 import { useLanguage } from '../../contexts/language-context'
-import type { ToolCallState } from '../../types/chat'
-
-import DiffView from './DiffView'
 import {
   getSubagentToolDetails,
   isSubagentRawOutputContent,
-} from './toolCallDetails'
+} from '../../core/toolCallDetails'
+import type { ToolCallState } from '../../types/chat'
+
+import DiffView from './DiffView'
 
 const TEXT_PREVIEW_LIMIT = 4000
 

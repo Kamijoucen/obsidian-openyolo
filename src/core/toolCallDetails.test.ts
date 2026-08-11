@@ -5,7 +5,6 @@ import {
   isSubagentRawOutputContent,
   parseOpenCodeTaskEnvelope,
 } from './toolCallDetails'
-
 const completedOutput = [
   '<task id="ses_child" state="completed">',
   '<task_result>',

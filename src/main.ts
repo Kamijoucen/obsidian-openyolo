@@ -46,6 +46,10 @@ export default class YoloPlugin extends Plugin {
     }
 
     const { AcpSessionService } = await import('./core/acp/service')
+    const { ensureSessionMapDir } = await import('./core/sessionMap')
+    void ensureSessionMapDir().catch((error) =>
+      console.warn('[openyolo] failed to create ~/.openyolo', error),
+    )
     this.sessionService = new AcpSessionService(
       this.app,
       () => this.settings,

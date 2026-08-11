@@ -1,5 +1,5 @@
 /*
- @yolo-version: 1.1.0
+ @yolo-version: 1.1.1
  */
 svg.svg-icon.yolo-orbit {
   fill: none;
@@ -879,6 +879,30 @@ body.is-mobile .yolo-chat-container--mobile-keyboard-managed {
 .yolo-chat-user-input-toolbar button.yolo-chat-input-model-select {
   font-weight: var(--font-normal);
   color: var(--text-muted);
+}
+
+.yolo-chat-user-input-toolbar button.yolo-chat-toolbar-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--size-2-1);
+  border-radius: var(--radius-s);
+  color: var(--text-muted);
+  background: transparent;
+  box-shadow: none;
+  cursor: pointer;
+}
+
+.yolo-chat-user-input-toolbar button.yolo-chat-toolbar-icon-button:hover,
+.yolo-chat-user-input-toolbar
+  button.yolo-chat-toolbar-icon-button:focus-visible {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+
+.yolo-chat-user-input-toolbar button.yolo-chat-toolbar-icon-button:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .yolo-chat-user-input-toolbar button.yolo-chat-input-model-select:hover,

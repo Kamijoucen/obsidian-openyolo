@@ -9,12 +9,16 @@ import {
   chatLogFilePath,
   extractSessionId,
   listConversationLogs,
+  mergeConversationDocuments,
   normalizeChatLogFolder,
   normalizeChatLogPath,
   sanitizeChatLogFileName,
   saveConversationLog,
   serializeConversation,
   shortSessionId,
+  splitConversationDocument,
+  stripConversationSegment,
+  wrapConversationSegment,
   writeConversationLog,
 } from './chatLog'
 
@@ -71,6 +75,32 @@ function toolEntry(): TimelineEntry {
       status: 'completed',
       content: [],
       locations: [],
+      permission: null,
+    },
+  }
+}
+
+function subagentEntry(title: string, output: string): TimelineEntry {
+  return {
+    kind: 'tool',
+    id: `tool-${title}`,
+    timestamp: 4,
+    toolCall: {
+      toolCallId: `call-${title}`,
+      title,
+      kind: 'other',
+      status: 'completed',
+      content: [],
+      locations: [],
+      rawInput: {
+        subagent_type: 'explore',
+        description: title,
+        prompt: '调研一下',
+      },
+      rawOutput: {
+        metadata: { sessionId: 'ses_child' },
+        output: `<task id="ses_child" state="completed"><task_result>${output}</task_result></task>`,
+      },
       permission: null,
     },
   }
@@ -159,11 +189,11 @@ describe('serializeConversation', () => {
     ).toBe('')
   })
 
-  it('serializes user and assistant text in order, skipping tool calls and reasoning', () => {
+  it('serializes user/assistant text with reasoning, skipping plain tool calls', () => {
     const markdown = serializeConversation(
       makeState([
         userEntry('帮我整理这篇笔记'),
-        assistantEntry('好的，已整理完成。', '隐藏的思考过程'),
+        assistantEntry('好的，已整理完成。', '先读了标题再决定结构'),
         toolEntry(),
         userEntry('再加一个标签'),
         assistantEntry('已添加。'),
@@ -173,14 +203,95 @@ describe('serializeConversation', () => {
     expect(markdown).toContain('<!-- openyolo-session: session-1 -->')
     expect(markdown).toContain('- Session: 测试会话')
     expect(markdown).toContain('## User\n\n帮我整理这篇笔记')
-    expect(markdown).toContain('## Assistant\n\n好的，已整理完成。')
+    expect(markdown).toContain(
+      '## Assistant\n\n好的，已整理完成。\n\n### Reasoning\n\n先读了标题再决定结构',
+    )
     expect(markdown).toContain('## User\n\n再加一个标签')
-    expect(markdown).not.toContain('隐藏的思考过程')
     expect(markdown).not.toContain('Read')
     expect(markdown.indexOf('帮我整理这篇笔记')).toBeLessThan(
       markdown.indexOf('好的，已整理完成。'),
     )
     expect(markdown.endsWith('\n')).toBe(true)
+  })
+
+  it('nests subagent output as a subsection and skips its envelope noise', () => {
+    const markdown = serializeConversation(
+      makeState([
+        userEntry('调研一下笔记结构'),
+        assistantEntry('我先派一个子 Agent 看看。'),
+        subagentEntry('调研笔记结构', '库里使用 PARA 结构，共 38 篇笔记。'),
+        assistantEntry('调研结果如下。'),
+      ]),
+    )
+    expect(markdown).toContain(
+      '### Subagent: 调研笔记结构\n\n库里使用 PARA 结构，共 38 篇笔记。',
+    )
+    expect(markdown).not.toContain('<task')
+    expect(markdown).not.toContain('task_result')
+    expect(markdown.indexOf('我先派一个子 Agent 看看。')).toBeLessThan(
+      markdown.indexOf('### Subagent: 调研笔记结构'),
+    )
+    expect(markdown.indexOf('### Subagent: 调研笔记结构')).toBeLessThan(
+      markdown.indexOf('调研结果如下。'),
+    )
+  })
+
+  it('uses the session id override for the marker and omits it without any id', () => {
+    const withOverride = serializeConversation(
+      makeState([userEntry('你好')]),
+      'ses_original',
+    )
+    expect(withOverride).toContain('<!-- openyolo-session: ses_original -->')
+    expect(withOverride).not.toContain('session-1')
+
+    const withoutId = serializeConversation({
+      ...makeState([userEntry('你好')]),
+      sessionId: null,
+    })
+    expect(withoutId).not.toContain('openyolo-session:')
+  })
+
+  it('keeps assistant entries that only have reasoning', () => {
+    const markdown = serializeConversation(
+      makeState([userEntry('问题'), assistantEntry('', '只有思考没有正文')]),
+    )
+    expect(markdown).toContain(
+      '## Assistant\n\n### Reasoning\n\n只有思考没有正文',
+    )
+  })
+
+  it('skips subagent calls with empty output and collapses multi-line titles', () => {
+    const emptyOutput = subagentEntry('空输出任务', '')
+    const raw = emptyOutput as { toolCall: { rawOutput: { output: string } } }
+    raw.toolCall.rawOutput.output =
+      '<task id="ses_child" state="completed"><task_result>   </task_result></task>'
+    const titled = subagentEntry('多行\n标题\t混排', '输出内容')
+    const markdown = serializeConversation(
+      makeState([userEntry('任务'), emptyOutput, titled]),
+    )
+    expect(markdown).not.toContain('空输出任务')
+    expect(markdown).toContain('### Subagent: 多行 标题 混排\n\n输出内容')
+  })
+
+  it('skips tools that merely carry a metadata session id', () => {
+    const entry = toolEntry()
+    ;(entry as { toolCall: { rawOutput?: unknown } }).toolCall.rawOutput = {
+      metadata: { sessionId: 'ses_other' },
+      output: '普通工具输出',
+    }
+    expect(
+      serializeConversation(makeState([userEntry('问'), entry])),
+    ).not.toContain('普通工具输出')
+  })
+
+  it('sanitizes multi-line titles in the header', () => {
+    const state = {
+      ...makeState([userEntry('你好')]),
+      title: '第一行\n第二行',
+    }
+    const markdown = serializeConversation(state)
+    expect(markdown).toContain('- Session: 第一行 第二行')
+    expect(markdown).not.toContain('\n第二行\n')
   })
 })
 
@@ -194,12 +305,109 @@ describe('extractSessionId', () => {
   })
 })
 
+describe('splitConversationDocument', () => {
+  it('splits header and body at the first section heading', () => {
+    const doc = '<!-- meta -->\n\n# Title\n\n## User\n\n你好\n'
+    const parts = splitConversationDocument(doc)
+    expect(parts.header).toBe('<!-- meta -->\n\n# Title')
+    expect(parts.body).toBe('## User\n\n你好')
+  })
+
+  it('treats a leading segment marker as the start of the body', () => {
+    const doc =
+      '头部\n\n<!-- openyolo-segment: s1 -->\n\n## User\n\n你好\n\n<!-- /openyolo-segment: s1 -->\n'
+    const parts = splitConversationDocument(doc)
+    expect(parts.header).toBe('头部')
+    expect(parts.body.startsWith('<!-- openyolo-segment: s1 -->')).toBe(true)
+  })
+
+  it('treats a document without sections as header-only', () => {
+    expect(splitConversationDocument('只有头部')).toEqual({
+      header: '只有头部',
+      body: '',
+    })
+  })
+})
+
+describe('mergeConversationDocuments', () => {
+  const previous =
+    '<!-- openyolo-session: s1 -->\n\n# OpenYOLO conversation history\n\n## User\n\n旧问题\n\n## Assistant\n\n旧回答\n'
+
+  it('keeps the new header and appends the old body before the new segment', () => {
+    const next =
+      '<!-- openyolo-session: s1 -->\n\n# OpenYOLO conversation history\n\n- Updated: now\n\n## User\n\n新问题\n'
+    const merged = mergeConversationDocuments(previous, next, 's2')
+    expect(merged).toContain('- Updated: now')
+    expect(merged).toContain('## User\n\n旧问题')
+    expect(merged).toContain('<!-- openyolo-segment: s2 -->')
+    expect(merged).toContain('<!-- /openyolo-segment: s2 -->')
+    expect(merged.indexOf('旧回答')).toBeLessThan(merged.indexOf('新问题'))
+    expect(merged.match(/# OpenYOLO conversation history/g)).toHaveLength(1)
+    expect(merged.endsWith('\n')).toBe(true)
+  })
+
+  it('is idempotent: merging again replaces the old segment instead of duplicating it', () => {
+    const next1 = '头\n\n## User\n\n恢复提示\n\n## Assistant\n\n第一句\n'
+    const next2 =
+      '头\n\n## User\n\n恢复提示\n\n## Assistant\n\n第一句\n\n## User\n\n第二句\n'
+    const merged1 = mergeConversationDocuments(previous, next1, 's2')
+    const merged2 = mergeConversationDocuments(merged1, next2, 's2')
+    expect(merged2.match(/第一句/g)).toHaveLength(1)
+    expect(merged2.match(/第二句/g)).toHaveLength(1)
+    expect(merged2.match(/旧回答/g)).toHaveLength(1)
+    expect(merged2.match(/<!-- openyolo-segment: s2 -->/g)).toHaveLength(1)
+    expect(merged2.match(/<!-- \/openyolo-segment: s2 -->/g)).toHaveLength(1)
+  })
+
+  it('keeps segments of other sessions intact when replacing one', () => {
+    const next1 = '头\n\n## User\n\n分支一\n'
+    const next2 = '头\n\n## User\n\n分支二\n'
+    const merged1 = mergeConversationDocuments(previous, next1, 's2')
+    const merged2 = mergeConversationDocuments(merged1, next2, 's3')
+    expect(merged2).toContain('分支一')
+    expect(merged2).toContain('分支二')
+    expect(merged2.indexOf('分支一')).toBeLessThan(merged2.indexOf('分支二'))
+  })
+})
+
 describe('shortSessionId', () => {
   it('keeps the last 8 alphanumeric characters', () => {
     expect(shortSessionId('ses_0153776c3ffe5GKDxm1nEVHnZO')).toBe(
       'xm1nEVHnZO'.slice(-8),
     )
     expect(shortSessionId('abc')).toBe('abc')
+  })
+})
+
+describe('conversation segments', () => {
+  it('returns the document unchanged when the segment is absent', () => {
+    const doc = '## User\n\n你好'
+    expect(stripConversationSegment(doc, 'ses_x')).toBe(doc)
+  })
+
+  it('strips only the matching segment and keeps siblings intact', () => {
+    const doc = [
+      '## User',
+      '',
+      '原始内容',
+      '',
+      wrapConversationSegment('ses_a', '## User\n\n分支A'),
+      '',
+      wrapConversationSegment('ses_b', '## User\n\n分支B'),
+    ].join('\n')
+    const stripped = stripConversationSegment(doc, 'ses_a')
+    expect(stripped).toContain('原始内容')
+    expect(stripped).not.toContain('分支A')
+    expect(stripped).toContain('分支B')
+    expect(stripped).not.toContain('openyolo-segment: ses_a')
+  })
+
+  it('splits and strips documents with CRLF line endings', () => {
+    const doc =
+      '头部\r\n\r\n<!-- openyolo-segment: s1 -->\r\n\r\n## User\r\n\r\n你好\r\n\r\n<!-- /openyolo-segment: s1 -->\r\n'
+    const parts = splitConversationDocument(doc)
+    expect(parts.header).toBe('头部')
+    expect(stripConversationSegment(parts.body, 's1')).toBe('')
   })
 })
 
@@ -290,6 +498,14 @@ describe('saveConversationLog', () => {
       saveConversationLog(asApp(vault), 'YOLO', makeState([]), day),
     ).resolves.toBeNull()
     expect(vault.files.size).toBe(0)
+  })
+
+  it('writes a new file directly when the state has no session id', async () => {
+    const vault = makeVault()
+    const state = { ...makeState([userEntry('你好')]), sessionId: null }
+    const path = await saveConversationLog(asApp(vault), 'YOLO', state, day)
+    expect(path).toBe('YOLO/2026-08-10/测试会话.md')
+    expect(vault.files.get(path!)).not.toContain('openyolo-session:')
   })
 
   it('writes a new file under the date folder named by title', async () => {
@@ -428,6 +644,29 @@ describe('listConversationLogs', () => {
       stat: () => Promise.resolve(null),
     })
     await expect(listConversationLogs(app, 'YOLO')).resolves.toEqual([])
+  })
+
+  it('filters non-file entries and tolerates failing subfolders', async () => {
+    const app = appWithAdapter({
+      list: (path) => {
+        if (path === 'YOLO') {
+          return Promise.resolve({
+            files: ['YOLO/note.md', 'YOLO/weird.md'],
+            folders: ['YOLO/broken'],
+          })
+        }
+        return Promise.reject(new Error('cannot list'))
+      },
+      stat: (path) =>
+        Promise.resolve(
+          path === 'YOLO/note.md'
+            ? { type: 'file', ctime: 1, mtime: 5, size: 1 }
+            : { type: 'folder', ctime: 1, mtime: 9, size: 0 },
+        ),
+    })
+    await expect(listConversationLogs(app, 'YOLO')).resolves.toEqual([
+      { path: 'YOLO/note.md', name: 'note', mtime: 5 },
+    ])
   })
 })
 
