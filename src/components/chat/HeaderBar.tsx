@@ -1,4 +1,4 @@
-import { FileText, History, Plus } from 'lucide-react'
+import { History, Plus } from 'lucide-react'
 import {
   memo,
   useCallback,
@@ -10,12 +10,8 @@ import {
 } from 'react'
 import { createPortal } from 'react-dom'
 
-import { useApp } from '../../contexts/app-context'
 import { useLanguage } from '../../contexts/language-context'
 import { useSessionService } from '../../contexts/service-context'
-import { useSettings } from '../../contexts/settings-context'
-import { listConversationLogs } from '../../core/chatLog'
-import type { ConversationLogInfo } from '../../core/chatLog'
 import type { HistorySessionInfo } from '../../types/chat'
 
 function HistoryPopup({
@@ -23,13 +19,11 @@ function HistoryPopup({
   ariaLabel,
   children,
   id,
-  wide = false,
 }: {
   anchorRef: React.RefObject<HTMLDivElement | null>
   ariaLabel: string
   children: React.ReactNode
   id: string
-  wide?: boolean
 }) {
   const [style, setStyle] = useState<React.CSSProperties>({})
   const [portalRoot, setPortalRoot] = useState<HTMLElement | null>(null)
@@ -49,8 +43,8 @@ function HistoryPopup({
         right: `${ownerWindow.innerWidth - rect.right}px`,
         maxHeight: 340,
         minWidth: 220,
-        maxWidth: wide ? 520 : 300,
-        overflowY: wide ? 'hidden' : 'auto',
+        maxWidth: 300,
+        overflowY: 'auto',
         zIndex: 40,
       })
     }
@@ -65,7 +59,7 @@ function HistoryPopup({
       ownerWindow.removeEventListener('resize', updatePosition)
       ownerDocument.removeEventListener('scroll', updatePosition, true)
     }
-  }, [anchorRef, wide])
+  }, [anchorRef])
   useLayoutEffect(() => {
     if (!portalRoot) return
     const surface = surfaceRef.current
@@ -101,18 +95,13 @@ function HistoryPopup({
 
 function HistoryDropdown({
   onOpenHistory,
-  onRestoreFromNote,
 }: {
   onOpenHistory: (session: HistorySessionInfo) => void
-  onRestoreFromNote: (notePath: string) => void
 }) {
   const service = useSessionService()
-  const app = useApp()
-  const { settings } = useSettings()
   const { t } = useLanguage()
   const [open, setOpen] = useState(false)
   const [sessions, setSessions] = useState<HistorySessionInfo[] | null>(null)
-  const [notes, setNotes] = useState<ConversationLogInfo[]>([])
   const [historyError, setHistoryError] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
@@ -126,7 +115,6 @@ function HistoryDropdown({
     if (!open) return
     let cancelled = false
     setSessions(null)
-    setNotes([])
     setHistoryError(false)
     service
       .listHistory()
@@ -139,11 +127,6 @@ function HistoryDropdown({
           setSessions([])
         }
       })
-    listConversationLogs(app, settings.conversationLogFolder)
-      .then((list) => {
-        if (!cancelled) setNotes(list)
-      })
-      .catch(() => undefined)
     const ownerDocument = containerRef.current?.ownerDocument ?? document
     const handleClickOutside = (event: MouseEvent) => {
       const target = event.target as Node
@@ -168,26 +151,7 @@ function HistoryDropdown({
       ownerDocument.removeEventListener('mousedown', handleClickOutside)
       ownerDocument.removeEventListener('keydown', handleKeyDown)
     }
-  }, [app, closePopup, open, service, settings.conversationLogFolder])
-
-  const noteItems = notes.map((note) => (
-    <button
-      key={note.path}
-      type="button"
-      className="yolo-popover-item"
-      onClick={() => {
-        closePopup()
-        onRestoreFromNote(note.path)
-      }}
-    >
-      <span className="yolo-popover-item__label">
-        <FileText size={14} /> {note.name}
-      </span>
-      <span className="yolo-acp-history-date">
-        {new Date(note.mtime).toLocaleDateString()}
-      </span>
-    </button>
-  ))
+  }, [closePopup, open, service])
 
   const sessionItems = (sessions ?? []).map((session) => (
     <button
@@ -210,12 +174,6 @@ function HistoryDropdown({
     </button>
   ))
 
-  const twoColumns =
-    notes.length > 0 &&
-    sessions !== null &&
-    !historyError &&
-    sessions.length > 0
-
   return (
     <div className="yolo-acp-history" ref={containerRef}>
       <button
@@ -236,48 +194,21 @@ function HistoryDropdown({
           anchorRef={containerRef}
           ariaLabel={t('chat.history', 'History')}
           id={popupId}
-          wide={twoColumns}
         >
-          {twoColumns ? (
-            <div className="yolo-acp-history-columns">
-              <div className="yolo-acp-history-column">
-                <div className="yolo-acp-history-section">
-                  {t('chat.noteHistorySection')}
-                </div>
-                <div className="yolo-model-select-list yolo-acp-history-list">
-                  {noteItems}
-                </div>
-              </div>
-              <div className="yolo-acp-history-column">
-                <div className="yolo-acp-history-section">
-                  {t('chat.sessionHistorySection')}
-                </div>
-                <div className="yolo-model-select-list yolo-acp-history-list">
-                  {sessionItems}
-                </div>
-              </div>
+          {sessions === null ? (
+            <div className="yolo-acp-history-empty">
+              {t('common.loading', 'Loading…')}
+            </div>
+          ) : historyError ? (
+            <div className="yolo-acp-history-empty">
+              {t('chat.historyLoadFailed', 'Could not load chat history.')}
+            </div>
+          ) : sessions.length === 0 ? (
+            <div className="yolo-acp-history-empty">
+              {t('chat.historyEmpty', 'No previous sessions')}
             </div>
           ) : (
-            <>
-              {noteItems.length > 0 ? (
-                <div className="yolo-model-select-list">{noteItems}</div>
-              ) : null}
-              {sessions === null ? (
-                <div className="yolo-acp-history-empty">
-                  {t('common.loading', 'Loading…')}
-                </div>
-              ) : historyError ? (
-                <div className="yolo-acp-history-empty">
-                  {t('chat.historyLoadFailed', 'Could not load chat history.')}
-                </div>
-              ) : sessions.length === 0 && noteItems.length === 0 ? (
-                <div className="yolo-acp-history-empty">
-                  {t('chat.historyEmpty', 'No previous sessions')}
-                </div>
-              ) : sessionItems.length === 0 ? null : (
-                <div className="yolo-model-select-list">{sessionItems}</div>
-              )}
-            </>
+            <div className="yolo-model-select-list">{sessionItems}</div>
           )}
         </HistoryPopup>
       ) : null}
@@ -309,24 +240,15 @@ type HeaderBarProps = {
   tabId: string | null
   onNew: () => void
   onOpenHistory: (session: HistorySessionInfo) => void
-  onRestoreFromNote: (notePath: string) => void
 }
 
-function HeaderBar({
-  tabId,
-  onNew,
-  onOpenHistory,
-  onRestoreFromNote,
-}: HeaderBarProps) {
+function HeaderBar({ tabId, onNew, onOpenHistory }: HeaderBarProps) {
   const { t } = useLanguage()
   return (
     <div className="yolo-acp-header">
       <HeaderTitle tabId={tabId} />
       <div className="yolo-acp-header-actions">
-        <HistoryDropdown
-          onOpenHistory={onOpenHistory}
-          onRestoreFromNote={onRestoreFromNote}
-        />
+        <HistoryDropdown onOpenHistory={onOpenHistory} />
         <button
           type="button"
           className="clickable-icon"

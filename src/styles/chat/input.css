@@ -1019,24 +1019,6 @@ button.yolo-chat-mode-select-item {
     color-mix(in srgb, var(--background-modifier-border) 60%, transparent);
 }
 
-.yolo-chat-mode-agent-card__title-row .yolo-chat-mode-select-item__label {
-  flex: 0 0 auto;
-}
-
-/* Trigger badge while YOLO is on (sits between label and chevron). */
-.yolo-chat-mode-select__yolo-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  color: var(--interactive-accent);
-}
-
-.yolo-chat-mode-select__yolo-badge svg {
-  width: 11px;
-  height: 11px;
-}
-
 .yolo-reasoning-select .yolo-chat-input-model-select__label {
   flex: 0 1 auto;
   text-align: center;

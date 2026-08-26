@@ -26,16 +26,8 @@ const noopHooks = {
 }
 
 describe('PermissionManager', () => {
-  it('auto-approves with allow_once when enabled', async () => {
-    const manager = new PermissionManager(() => true)
-    const response = await manager.handleRequest(makeRequest(), noopHooks)
-    expect(response).toEqual({
-      outcome: { outcome: 'selected', optionId: 'once' },
-    })
-  })
-
-  it('waits for user response when auto-approve is off', async () => {
-    const manager = new PermissionManager(() => false)
+  it('waits for a user response', async () => {
+    const manager = new PermissionManager()
     const captured: RequestPermissionRequest[] = []
     const settled: Array<[string, string]> = []
     const promise = manager.handleRequest(makeRequest(), {
@@ -59,7 +51,7 @@ describe('PermissionManager', () => {
   })
 
   it('uses sessionId to scope identical toolCallIds', async () => {
-    const manager = new PermissionManager(() => false)
+    const manager = new PermissionManager()
     const first = manager.handleRequest(makeRequest('s1', 'shared'), noopHooks)
     const second = manager.handleRequest(makeRequest('s2', 'shared'), noopHooks)
 
@@ -78,7 +70,7 @@ describe('PermissionManager', () => {
   })
 
   it('cancels an older request with the same composite key', async () => {
-    const manager = new PermissionManager(() => false)
+    const manager = new PermissionManager()
     const events: string[] = []
     const hooks = {
       onPending: (params: RequestPermissionRequest) => {
@@ -101,27 +93,8 @@ describe('PermissionManager', () => {
     })
   })
 
-  it('does not auto-approve without an allow_once option', async () => {
-    const manager = new PermissionManager(() => true)
-    const onPending = jest.fn()
-    const promise = manager.handleRequest(
-      makeRequest('s1', 't1', [
-        { optionId: 'always', kind: 'allow_always', name: 'Always allow' },
-        { optionId: 'reject', kind: 'reject_once', name: 'Reject' },
-      ]),
-      { onPending, onSettled: () => undefined },
-    )
-
-    expect(onPending).toHaveBeenCalledTimes(1)
-    expect(manager.hasPending('s1', 't1')).toBe(true)
-    expect(manager.respond('s1', 't1', 'reject')).toBe(true)
-    await expect(promise).resolves.toEqual({
-      outcome: { outcome: 'selected', optionId: 'reject' },
-    })
-  })
-
   it('cancels pending requests for a session', async () => {
-    const manager = new PermissionManager(() => false)
+    const manager = new PermissionManager()
     const promise = manager.handleRequest(
       makeRequest('s1', 'shared'),
       noopHooks,
@@ -140,7 +113,7 @@ describe('PermissionManager', () => {
   })
 
   it('cancelAll resolves every pending request', async () => {
-    const manager = new PermissionManager(() => false)
+    const manager = new PermissionManager()
     const p1 = manager.handleRequest(makeRequest('s1', 't1'), noopHooks)
     const p2 = manager.handleRequest(makeRequest('s2', 't2'), noopHooks)
     manager.cancelAll()
@@ -151,12 +124,12 @@ describe('PermissionManager', () => {
   })
 
   it('respond returns false for unknown toolCallId', () => {
-    const manager = new PermissionManager(() => false)
+    const manager = new PermissionManager()
     expect(manager.respond('s1', 'nope', 'once')).toBe(false)
   })
 
   it('allows an onPending hook to respond synchronously', async () => {
-    const manager = new PermissionManager(() => false)
+    const manager = new PermissionManager()
     const promise = manager.handleRequest(makeRequest(), {
       onPending: () => {
         expect(manager.respond('s1', 't1', 'once')).toBe(true)
@@ -170,7 +143,7 @@ describe('PermissionManager', () => {
   })
 
   it('settles when the signal aborts from the onPending hook', async () => {
-    const manager = new PermissionManager(() => false)
+    const manager = new PermissionManager()
     const controller = new AbortController()
     const promise = manager.handleRequest(
       makeRequest(),
@@ -188,7 +161,7 @@ describe('PermissionManager', () => {
   })
 
   it('cleans up when the onPending hook throws', async () => {
-    const manager = new PermissionManager(() => false)
+    const manager = new PermissionManager()
     const onSettled = jest.fn()
     const promise = manager.handleRequest(makeRequest(), {
       onPending: () => {

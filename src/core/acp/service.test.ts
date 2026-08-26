@@ -53,7 +53,6 @@ const SETTINGS: YoloSettings = {
   opencodePath: '',
   opencodeArgs: [],
   defaultMode: 'build',
-  autoApprovePermissions: false,
   showReasoning: true,
   debugLog: false,
   attachCurrentNote: true,

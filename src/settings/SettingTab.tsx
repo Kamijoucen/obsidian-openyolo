@@ -127,11 +127,6 @@ export class YoloSettingTab extends PluginSettingTab {
             },
           },
           {
-            name: t('settings.autoApprove'),
-            desc: t('settings.autoApproveDesc'),
-            control: { type: 'toggle', key: 'autoApprovePermissions' },
-          },
-          {
             name: t('settings.showReasoning'),
             desc: t('settings.showReasoningDesc'),
             control: { type: 'toggle', key: 'showReasoning' },
@@ -176,7 +171,6 @@ export class YoloSettingTab extends PluginSettingTab {
       }
       case 'manageAgentsMd':
       case 'attachCurrentNote':
-      case 'autoApprovePermissions':
       case 'showReasoning':
       case 'debugLog':
         next[key] = Boolean(value)

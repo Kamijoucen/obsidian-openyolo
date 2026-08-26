@@ -11,13 +11,12 @@ export type YoloSettings = {
   opencodePath: string
   opencodeArgs: string[]
   defaultMode: ChatMode
-  autoApprovePermissions: boolean
   showReasoning: boolean
   debugLog: boolean
   attachCurrentNote: boolean
   systemPrompt: string
   manageAgentsMd: boolean
-  /** 对话记录笔记的库内文件夹，保存时以对话标题为文件名整体覆盖 */
+  /** 手动导出对话笔记的库内文件夹 */
   conversationLogFolder: string
   /** 记录用户选择的模型/思考强度等 configOption（configId → value），跨会话与重启恢复 */
   savedConfigSelections: Record<string, string>
@@ -27,7 +26,6 @@ export const DEFAULT_SETTINGS: YoloSettings = {
   opencodePath: '',
   opencodeArgs: [],
   defaultMode: 'build',
-  autoApprovePermissions: false,
   showReasoning: true,
   debugLog: false,
   attachCurrentNote: true,
@@ -59,10 +57,6 @@ export function normalizeSettings(
       source.defaultMode === 'plan' || source.defaultMode === 'build'
         ? source.defaultMode
         : DEFAULT_SETTINGS.defaultMode,
-    autoApprovePermissions:
-      typeof source.autoApprovePermissions === 'boolean'
-        ? source.autoApprovePermissions
-        : DEFAULT_SETTINGS.autoApprovePermissions,
     showReasoning:
       typeof source.showReasoning === 'boolean'
         ? source.showReasoning

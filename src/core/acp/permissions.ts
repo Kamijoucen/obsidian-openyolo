@@ -22,17 +22,8 @@ function cancelledResponse(): RequestPermissionResponse {
   return { outcome: { outcome: 'cancelled' } }
 }
 
-function pickAutoApproveOption(
-  options: RequestPermissionRequest['options'],
-): string | null {
-  const allowOnce = options.find((option) => option.kind === 'allow_once')
-  return allowOnce?.optionId ?? null
-}
-
 export class PermissionManager {
   private pending = new Map<string, Map<string, PendingEntry>>()
-
-  constructor(private readonly autoApprove: () => boolean) {}
 
   handleRequest(
     params: RequestPermissionRequest,
@@ -43,12 +34,6 @@ export class PermissionManager {
     const toolCallId = params.toolCall.toolCallId
     this.settlePending(sessionId, toolCallId, cancelledResponse())
     if (signal?.aborted) return Promise.resolve(cancelledResponse())
-    if (this.autoApprove()) {
-      const optionId = pickAutoApproveOption(params.options)
-      if (optionId !== null) {
-        return Promise.resolve(selectedResponse(optionId))
-      }
-    }
     return new Promise<RequestPermissionResponse>((resolve, reject) => {
       let sessionPending = this.pending.get(sessionId)
       if (!sessionPending) {

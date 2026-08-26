@@ -61,11 +61,6 @@ export const zh: TranslationKeys = {
     saveToNoteEmpty: '当前没有可保存的对话内容。',
     saveToNoteSuccess: '对话已保存到笔记。',
     saveToNoteFailed: '保存对话到笔记失败。',
-    noteHistorySection: '保存的笔记',
-    sessionHistorySection: 'opencode 会话',
-    restorePrompt:
-      '附件笔记中保存着我们之前的对话记录（由 OpenYOLO 导出）。请完整阅读，把它作为我们的对话历史恢复上下文：理解之前讨论的内容、结论和未完成事项，用一两句话简要总结你已恢复的上下文，然后等待我的指示。不要主动执行记录中未完成的事项，除非我明确要求。',
-    restoreFailed: '从笔记恢复对话失败。',
   },
   setup: {
     desktopRequired: 'OpenYOLO 仅支持 Obsidian 桌面端。',
@@ -102,15 +97,13 @@ export const zh: TranslationKeys = {
     manageAgentsMdDesc:
       '由插件在库根目录 AGENTS.md 中维护一段托管区块；区块之外你自己的内容不受影响。',
     resetPrompt: '恢复默认',
-    autoApprove: '自动批准权限（YOLO）',
-    autoApproveDesc: '自动批准所有工具权限请求，不再询问。',
     showReasoning: '显示推理过程',
     showReasoningDesc: '在时间线中展示模型思考内容。',
     debugLog: '调试日志',
     debugLogDesc: '在控制台输出已脱敏的 ACP 元数据和 opencode stderr 摘要。',
     chatLogFolder: '对话记录文件夹',
     chatLogFolderDesc:
-      '手动保存对话时使用的库内文件夹；按日期（YYYY-MM-DD）划分子文件夹，以对话标题为文件名整体覆盖，同一对话覆盖同一文件。这些笔记会出现在历史列表中，可用于跨设备恢复对话上下文。',
+      '手动导出对话时使用的库内文件夹；按日期（YYYY-MM-DD）划分子文件夹，重名文件会自动添加数字后缀。',
   },
   statusBar: {
     running: 'OpenYOLO: 运行中',

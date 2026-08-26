@@ -81,8 +81,7 @@
   padding: 4px;
 }
 
-/* 历史弹层统一由弹层自身滚动；双列模式才允许列内列表滚动，
-   避免与 .yolo-model-select-list 的基础滚动样式叠加出双滚动条。 */
+/* 历史弹层统一由弹层自身滚动。 */
 .yolo-acp-history-popup .yolo-model-select-list {
   max-height: none;
   overflow: visible;
@@ -100,38 +99,6 @@
   color: var(--text-faint);
   flex-shrink: 0;
   margin-left: auto;
-}
-
-.yolo-acp-history-columns {
-  display: flex;
-  gap: 4px;
-  align-items: stretch;
-}
-
-.yolo-acp-history-column {
-  flex: 1 1 0;
-  min-width: 200px;
-  max-width: 250px;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
-
-.yolo-acp-history-column + .yolo-acp-history-column {
-  border-left: 1px solid var(--background-modifier-border);
-  padding-left: 4px;
-}
-
-.yolo-acp-history-section {
-  padding: 6px 8px 4px;
-  font-size: var(--font-ui-smaller);
-  color: var(--text-faint);
-  flex-shrink: 0;
-}
-
-.yolo-acp-history-popup .yolo-acp-history-list {
-  max-height: 280px;
-  overflow-y: auto;
 }
 
 /* 设置引导横幅 */

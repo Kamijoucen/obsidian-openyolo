@@ -196,9 +196,7 @@ export class AcpSessionService {
     private readonly createClient: AcpClientFactory = (options) =>
       new AcpClient(options),
   ) {
-    this.permissionManager = new PermissionManager(
-      () => this.getSettings().autoApprovePermissions,
-    )
+    this.permissionManager = new PermissionManager()
   }
 
   private setLastConfigOptions(options: SessionConfigOption[]) {

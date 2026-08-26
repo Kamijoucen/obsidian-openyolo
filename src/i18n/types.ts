@@ -61,10 +61,6 @@ export type TranslationKeys = {
     saveToNoteEmpty: string
     saveToNoteSuccess: string
     saveToNoteFailed: string
-    noteHistorySection: string
-    sessionHistorySection: string
-    restorePrompt: string
-    restoreFailed: string
   }
   setup: {
     desktopRequired: string
@@ -96,8 +92,6 @@ export type TranslationKeys = {
     manageAgentsMd: string
     manageAgentsMdDesc: string
     resetPrompt: string
-    autoApprove: string
-    autoApproveDesc: string
     showReasoning: string
     showReasoningDesc: string
     debugLog: string

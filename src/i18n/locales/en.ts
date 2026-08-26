@@ -61,11 +61,6 @@ export const en: TranslationKeys = {
     saveToNoteEmpty: 'Nothing to save yet.',
     saveToNoteSuccess: 'Conversation saved to note.',
     saveToNoteFailed: 'Failed to save conversation to note.',
-    noteHistorySection: 'Saved notes',
-    sessionHistorySection: 'opencode sessions',
-    restorePrompt:
-      'The attached note contains our previous conversation history (exported by OpenYOLO). Read it fully and treat it as our restored conversation context: understand what we discussed, the conclusions, and any unfinished items. Then briefly summarize the context you recovered in one or two sentences and wait for my instructions. Do not resume any unfinished tasks from the record unless I explicitly ask.',
-    restoreFailed: 'Failed to restore conversation from note.',
   },
   setup: {
     desktopRequired: 'OpenYOLO requires Obsidian desktop.',
@@ -105,9 +100,6 @@ export const en: TranslationKeys = {
     manageAgentsMdDesc:
       'Let the plugin maintain a managed block in the vault-root AGENTS.md. Your own content outside the block is preserved.',
     resetPrompt: 'Reset to default',
-    autoApprove: 'Auto-approve permissions (YOLO)',
-    autoApproveDesc:
-      'Automatically approve every tool permission request without asking.',
     showReasoning: 'Show reasoning',
     showReasoningDesc: 'Display model thinking blocks in the timeline.',
     debugLog: 'Debug logging',
@@ -115,7 +107,7 @@ export const en: TranslationKeys = {
       'Log sanitized ACP metadata and opencode stderr summaries to the console.',
     chatLogFolder: 'Conversation log folder',
     chatLogFolderDesc:
-      'Vault folder used when you manually save a conversation. Saves are grouped into date subfolders (YYYY-MM-DD) and the conversation title becomes the file name, so saving the same conversation overwrites the same file. Saved notes appear in the history list and can restore conversation context across devices.',
+      'Vault folder used when you manually export a conversation. Exports are grouped into date subfolders (YYYY-MM-DD), and duplicate file names receive a numeric suffix.',
   },
   statusBar: {
     running: 'OpenYOLO: running',

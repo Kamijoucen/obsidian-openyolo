@@ -1,16 +1,9 @@
 import { Notice } from 'obsidian'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-import { useApp } from '../../contexts/app-context'
 import { useLanguage } from '../../contexts/language-context'
 import { useSessionService } from '../../contexts/service-context'
 import type { AvailabilityState } from '../../core/acp/service'
-import {
-  buildRestoreBlocks,
-  extractSessionId,
-  vaultBasePath,
-} from '../../core/chatLog'
-import { recordSessionMapping } from '../../core/sessionMap'
 import type { HistorySessionInfo } from '../../types/chat'
 
 import HeaderBar from './HeaderBar'
@@ -23,7 +16,6 @@ type ChatAppProps = {
 
 export default function ChatApp({ onOpenSettings }: ChatAppProps) {
   const service = useSessionService()
-  const app = useApp()
   const { t } = useLanguage()
   const [tabId, setTabId] = useState<string | null>(null)
   const activeTabRef = useRef<string | null>(null)
@@ -97,7 +89,7 @@ export default function ChatApp({ onOpenSettings }: ChatAppProps) {
       activateSingleTab(existing[0].tabId)
       return
     }
-    // Defer spawning opencode until after the current restore/paint cycle so
+    // Defer spawning opencode until after the current paint cycle so
     // app startup isn't competing with the ACP subprocess boot.
     const timer = window.setTimeout(() => {
       const sequence = ++switchSequenceRef.current
@@ -137,55 +129,6 @@ export default function ChatApp({ onOpenSettings }: ChatAppProps) {
     activateSingleTab(service.createTab())
   }, [activateSingleTab, service])
 
-  const handleRestoreFromNote = useCallback(
-    (notePath: string) => {
-      switchSequenceRef.current += 1
-      targetSessionRef.current = null
-      const restoreText = t('chat.restorePrompt')
-      void (async () => {
-        let noteText: string
-        try {
-          noteText = await app.vault.adapter.read(notePath)
-        } catch {
-          if (mountedRef.current) new Notice(t('chat.restoreFailed'))
-          return
-        }
-        if (!mountedRef.current) return
-        const blocks = buildRestoreBlocks(
-          restoreText,
-          noteText,
-          notePath,
-          vaultBasePath(app),
-        )
-        const id = service.createTab()
-        activateSingleTab(id)
-        let result: string
-        try {
-          result = await service.submit(id, restoreText, blocks)
-        } catch {
-          result = 'failed'
-        }
-        if (result !== 'accepted') {
-          if (mountedRef.current) new Notice(t('chat.restoreFailed'))
-          return
-        }
-        const newSessionId = service.getState(id)?.sessionId
-        const originalId = extractSessionId(noteText)
-        if (newSessionId && originalId && newSessionId !== originalId) {
-          try {
-            await recordSessionMapping(vaultBasePath(app), newSessionId, {
-              id: originalId,
-              path: notePath,
-            })
-          } catch (error) {
-            console.warn('[openyolo] failed to record session mapping', error)
-          }
-        }
-      })()
-    },
-    [activateSingleTab, app, service, t],
-  )
-
   const handleOpenHistory = useCallback(
     (session: HistorySessionInfo) => {
       const sequence = ++switchSequenceRef.current
@@ -224,7 +167,6 @@ export default function ChatApp({ onOpenSettings }: ChatAppProps) {
         tabId={tabId}
         onNew={handleNew}
         onOpenHistory={handleOpenHistory}
-        onRestoreFromNote={handleRestoreFromNote}
       />
       <SetupBanner
         availability={availability}

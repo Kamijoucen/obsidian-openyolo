@@ -10,7 +10,7 @@ import { useApp } from '../../contexts/app-context'
 import { useLanguage } from '../../contexts/language-context'
 import { useSessionService } from '../../contexts/service-context'
 import { useSettings } from '../../contexts/settings-context'
-import { saveConversationWithMap } from '../../core/sessionMap'
+import { saveConversationLog } from '../../core/chatLog'
 import type { ChatSessionState } from '../../types/chat'
 
 import ChatInput, { AttachedNote, InputImage } from './ChatInput'
@@ -160,7 +160,7 @@ function SessionPanel({ tabId }: SessionPanelProps) {
       return
     }
     setSavingToNote(true)
-    void saveConversationWithMap(app, settings.conversationLogFolder, current)
+    void saveConversationLog(app, settings.conversationLogFolder, current)
       .then((path) => {
         new Notice(
           path ? t('chat.saveToNoteSuccess') : t('chat.saveToNoteEmpty'),
