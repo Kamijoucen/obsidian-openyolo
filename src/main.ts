@@ -3,6 +3,7 @@ import { Notice, Platform, Plugin, WorkspaceLeaf, addIcon } from 'obsidian'
 import { ChatView } from './ChatView'
 import { syncAgentsMd } from './core/acp/agentsMd'
 import type { AcpSessionService } from './core/acp/service'
+import { InputHistory } from './core/inputHistory'
 import { getUiLanguage, loadLocale, t } from './i18n'
 import { sameConnectionSettings } from './settings/connectionSettings'
 import {
@@ -18,8 +19,11 @@ export const CHAT_VIEW_TYPE = 'yolo-lite-chat-view'
 
 const CONNECTION_RESTART_DEBOUNCE_MS = 750
 
+type PluginData = YoloSettings & { inputHistory: readonly string[] }
+
 export default class YoloPlugin extends Plugin {
   settings: YoloSettings = DEFAULT_SETTINGS
+  readonly inputHistory = new InputHistory(() => this.savePluginData())
   private sessionService: AcpSessionService | null = null
   private settingsListeners = new Set<(settings: YoloSettings) => void>()
   private statusBarItem: HTMLElement | null = null
@@ -29,8 +33,8 @@ export default class YoloPlugin extends Plugin {
   private unsubscribeActivityChange: (() => void) | null = null
   private activationPromise: Promise<void> | null = null
   private unloading = false
-  private readonly settingsWriter = new SerialWriter<YoloSettings>((settings) =>
-    this.saveData(settings),
+  private readonly settingsWriter = new SerialWriter<PluginData>((data) =>
+    this.saveData(data),
   )
 
   async onload() {
@@ -171,7 +175,20 @@ export default class YoloPlugin extends Plugin {
   }
 
   async loadSettings() {
-    this.settings = normalizeSettings(await this.loadData(), getUiLanguage())
+    const data: unknown = await this.loadData()
+    this.settings = normalizeSettings(data, getUiLanguage())
+    this.inputHistory.restore(
+      typeof data === 'object' && data !== null && 'inputHistory' in data
+        ? data.inputHistory
+        : undefined,
+    )
+  }
+
+  private savePluginData(): Promise<void> {
+    return this.settingsWriter.write({
+      ...this.settings,
+      inputHistory: this.inputHistory.getEntries(),
+    })
   }
 
   async saveSettings(next: YoloSettings) {
@@ -188,7 +205,7 @@ export default class YoloPlugin extends Plugin {
     ) {
       this.scheduleAgentsMdSync()
     }
-    await this.settingsWriter.write(next)
+    await this.savePluginData()
     if (
       connectionChanged &&
       !this.unloading &&

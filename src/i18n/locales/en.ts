@@ -16,6 +16,7 @@ export const en: TranslationKeys = {
     history: 'History',
     historyEmpty: 'No previous sessions',
     historyLoadFailed: 'Could not load chat history.',
+    inputHistorySaveFailed: 'Could not save input history locally.',
     inputPlaceholder: 'Ask anything… ( / for commands)',
     stopGenerating: 'Stop generating',
     generating: 'Generating…',

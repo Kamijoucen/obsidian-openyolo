@@ -4,8 +4,16 @@ import type {
 } from '@agentclientprotocol/sdk'
 import { ArrowUp, FileText, Paperclip, Save, Square, X } from 'lucide-react'
 import { TFile } from 'obsidian'
-import { KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  KeyboardEvent,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 
+import { useInputHistory } from '../../contexts/input-history-context'
 import { useLanguage } from '../../contexts/language-context'
 import { useSettings } from '../../contexts/settings-context'
 import type { SessionModeState } from '../../types/chat'
@@ -22,6 +30,10 @@ import {
   type ImageAttachmentLimitReason,
   admitImageAttachments,
 } from './imageAttachments'
+import {
+  InputHistoryNavigation,
+  historyDirectionForKey,
+} from './inputHistoryNavigation'
 import { AttachedNote, NotePicker } from './NotePicker'
 import {
   ConfigOptionSelect,
@@ -180,6 +192,7 @@ function ChatInput({
 }: ChatInputProps) {
   const { t } = useLanguage()
   const { settings } = useSettings()
+  const inputHistory = useInputHistory()
   const [text, setText] = useState('')
   const [images, setImages] = useState<InputImage[]>([])
   const [notes, setNotes] = useState<TFile[]>([])
@@ -191,6 +204,8 @@ function ChatInput({
   const [attachmentError, setAttachmentError] = useState<string | null>(null)
   const [commandIndex, setCommandIndex] = useState(0)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const historyNavigation = useRef(new InputHistoryNavigation())
+  const historyCaretRef = useRef<number | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const submittingRef = useRef(false)
   const mountedRef = useRef(true)
@@ -198,6 +213,19 @@ function ChatInput({
   const imageUsageRef = useRef({ count: 0, bytes: 0 })
   const pendingImageReadsRef = useRef(new Set<AbortController>())
   const activeFile = useActiveFile()
+
+  const editText = (value: string) => {
+    historyNavigation.current.reset()
+    historyCaretRef.current = null
+    setText(value)
+  }
+
+  useLayoutEffect(() => {
+    const caret = historyCaretRef.current
+    if (caret === null) return
+    textareaRef.current?.setSelectionRange(caret, caret)
+    historyCaretRef.current = null
+  }, [text])
 
   useEffect(() => {
     mountedRef.current = true
@@ -400,6 +428,7 @@ function ChatInput({
       if (!mountedRef.current) return
       const settled = settleComposerDraft(draft, result)
       if (settled !== draft) {
+        historyNavigation.current.reset()
         for (const image of draft.images) {
           releaseImageUsage(image)
           revokeImagePreview(image)
@@ -439,7 +468,35 @@ function ChatInput({
         event.preventDefault()
         const command = matchedCommands[commandIndex]
         if (command) {
-          setText(`/${command.name} `)
+          editText(`/${command.name} `)
+        }
+        return
+      }
+    }
+    const textarea = event.currentTarget
+    const direction = historyDirectionForKey({
+      key: event.key,
+      ctrlKey: event.ctrlKey,
+      metaKey: event.metaKey,
+      altKey: event.altKey,
+      shiftKey: event.shiftKey,
+      selectionStart: textarea.selectionStart,
+      selectionEnd: textarea.selectionEnd,
+      textLength: textarea.value.length,
+    })
+    if (direction) {
+      const recalled = historyNavigation.current.navigate(
+        inputHistory.getEntries(),
+        direction,
+      )
+      if (recalled !== null) {
+        event.preventDefault()
+        const caret = direction === 'previous' ? 0 : recalled.length
+        if (recalled === text) {
+          textarea.setSelectionRange(caret, caret)
+        } else {
+          historyCaretRef.current = caret
+          setText(recalled)
         }
         return
       }
@@ -512,7 +569,7 @@ function ChatInput({
                 }`}
                 onMouseDown={(event) => {
                   event.preventDefault()
-                  setText(`/${command.name} `)
+                  editText(`/${command.name} `)
                   textareaRef.current?.focus()
                 }}
               >
@@ -641,7 +698,7 @@ function ChatInput({
               value={text}
               rows={1}
               disabled={disabled || submitting}
-              onChange={(event) => setText(event.target.value)}
+              onChange={(event) => editText(event.target.value)}
               onKeyDown={handleKeyDown}
               onPaste={handlePaste}
             />

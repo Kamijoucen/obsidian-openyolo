@@ -7,6 +7,7 @@ import { Notice } from 'obsidian'
 import { memo, useCallback, useEffect, useState } from 'react'
 
 import { useApp } from '../../contexts/app-context'
+import { useInputHistory } from '../../contexts/input-history-context'
 import { useLanguage } from '../../contexts/language-context'
 import { useSessionService } from '../../contexts/service-context'
 import { useSettings } from '../../contexts/settings-context'
@@ -93,6 +94,7 @@ type SessionPanelProps = {
 
 function SessionPanel({ tabId }: SessionPanelProps) {
   const service = useSessionService()
+  const inputHistory = useInputHistory()
   const app = useApp()
   const { settings } = useSettings()
   const { t } = useLanguage()
@@ -122,9 +124,16 @@ function SessionPanel({ tabId }: SessionPanelProps) {
       notes: AttachedNote[],
     ): Promise<SubmitResult> => {
       const blocks = buildPromptBlocks(text, images, notes, vaultBasePath(app))
-      return service.submit(tabId, text, blocks)
+      const result = await service.submit(tabId, text, blocks)
+      if (result === 'accepted') {
+        void inputHistory.append(text).catch((error) => {
+          console.warn('[openyolo] failed to save input history', error)
+          new Notice(t('chat.inputHistorySaveFailed'))
+        })
+      }
+      return result
     },
-    [service, tabId, app],
+    [service, tabId, app, inputHistory, t],
   )
 
   const handleCancel = useCallback(() => {

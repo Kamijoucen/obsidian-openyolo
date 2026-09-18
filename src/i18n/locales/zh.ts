@@ -16,6 +16,7 @@ export const zh: TranslationKeys = {
     history: '历史',
     historyEmpty: '暂无历史会话',
     historyLoadFailed: '无法加载历史会话。',
+    inputHistorySaveFailed: '输入历史未能保存到本地。',
     inputPlaceholder: '输入消息…（ / 唤起命令）',
     stopGenerating: '停止生成',
     generating: '正在生成…',

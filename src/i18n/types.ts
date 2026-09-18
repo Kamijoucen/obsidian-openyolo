@@ -16,6 +16,7 @@ export type TranslationKeys = {
     history: string
     historyEmpty: string
     historyLoadFailed: string
+    inputHistorySaveFailed: string
     inputPlaceholder: string
     stopGenerating: string
     generating: string

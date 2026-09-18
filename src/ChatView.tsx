@@ -4,6 +4,7 @@ import { Root, createRoot } from 'react-dom/client'
 
 import ChatApp from './components/chat/ChatApp'
 import { AppProvider } from './contexts/app-context'
+import { InputHistoryProvider } from './contexts/input-history-context'
 import { LanguageProvider } from './contexts/language-context'
 import { ServiceProvider } from './contexts/service-context'
 import { SettingsProvider } from './contexts/settings-context'
@@ -53,7 +54,9 @@ export class ChatView extends ItemView {
         >
           <LanguageProvider>
             <ServiceProvider service={this.plugin.getSessionService()}>
-              <ChatApp onOpenSettings={() => this.plugin.openSettings()} />
+              <InputHistoryProvider value={this.plugin.inputHistory}>
+                <ChatApp onOpenSettings={() => this.plugin.openSettings()} />
+              </InputHistoryProvider>
             </ServiceProvider>
           </LanguageProvider>
         </SettingsProvider>
