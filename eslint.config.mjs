@@ -112,6 +112,8 @@ export default tseslint.config(
     files: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
     rules: {
       'obsidianmd/no-global-this': 'off',
+      // jsdom tests use standard DOM APIs without Obsidian's createEl helpers.
+      'obsidianmd/prefer-create-el': 'off',
     },
   },
   {

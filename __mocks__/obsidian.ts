@@ -17,8 +17,11 @@ export class FileSystemAdapter {
 export const normalizePath = jest.fn((path: string) => path)
 export const requestUrl = jest.fn()
 export const htmlToMarkdown = jest.fn((html: string) => html)
-export const renderMath = jest.fn()
-export const finishRenderMath = jest.fn(async () => undefined)
+export class Component {
+  load = jest.fn()
+  unload = jest.fn()
+}
+export const MarkdownRenderer = { render: jest.fn(async () => undefined) }
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- Jest mock: 复用 yaml 与生产环境(Obsidian 内嵌)行为一致
 const yaml = require('yaml') as { parse: (input: string) => unknown }
 export const parseYaml = jest.fn((input: string) => yaml.parse(input))

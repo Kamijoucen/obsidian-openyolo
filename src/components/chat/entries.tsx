@@ -169,13 +169,19 @@ export const AssistantEntryView = memo(function AssistantEntryView({
           {reasoningOpen ? (
             <div className="yolo-assistant-message-metadata-content">
               <div className="yolo-assistant-message-metadata-body">
-                <StreamingMarkdown content={entry.reasoning} scale="xs" />
+                <StreamingMarkdown
+                  content={entry.reasoning}
+                  scale="xs"
+                  streaming={entry.streaming}
+                />
               </div>
             </div>
           ) : null}
         </div>
       ) : null}
-      {entry.text ? <StreamingMarkdown content={entry.text} /> : null}
+      {entry.text ? (
+        <StreamingMarkdown content={entry.text} streaming={entry.streaming} />
+      ) : null}
       {nonTextBlocks.length > 0 ? (
         <div className="yolo-acp-assistant-content-blocks">
           {nonTextBlocks.map((block, index) => (

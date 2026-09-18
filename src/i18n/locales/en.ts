@@ -62,6 +62,11 @@ export const en: TranslationKeys = {
     saveToNoteEmpty: 'Nothing to save yet.',
     saveToNoteSuccess: 'Conversation saved to note.',
     saveToNoteFailed: 'Failed to save conversation to note.',
+    copy: 'Copy',
+    copyDiagram: 'Copy diagram source',
+    copyFormula: 'Copy formula source',
+    copied: 'Copied',
+    copyFailed: 'Could not copy. Please try again.',
   },
   setup: {
     desktopRequired: 'OpenYOLO requires Obsidian desktop.',

@@ -1,6 +1,7 @@
 import { Notice, Platform, Plugin, WorkspaceLeaf, addIcon } from 'obsidian'
 
 import { ChatView } from './ChatView'
+import { addMarkdownCopyButtons } from './components/chat/markdownCopy'
 import { syncAgentsMd } from './core/acp/agentsMd'
 import type { AcpSessionService } from './core/acp/service'
 import { InputHistory } from './core/inputHistory'
@@ -48,6 +49,8 @@ export default class YoloPlugin extends Plugin {
       )
       return
     }
+
+    this.registerMarkdownPostProcessor(addMarkdownCopyButtons, -100)
 
     const { AcpSessionService } = await import('./core/acp/service')
     this.sessionService = new AcpSessionService(

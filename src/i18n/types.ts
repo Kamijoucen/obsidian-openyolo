@@ -62,6 +62,11 @@ export type TranslationKeys = {
     saveToNoteEmpty: string
     saveToNoteSuccess: string
     saveToNoteFailed: string
+    copy: string
+    copyDiagram: string
+    copyFormula: string
+    copied: string
+    copyFailed: string
   }
   setup: {
     desktopRequired: string

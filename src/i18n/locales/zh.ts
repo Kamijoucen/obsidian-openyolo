@@ -62,6 +62,11 @@ export const zh: TranslationKeys = {
     saveToNoteEmpty: '当前没有可保存的对话内容。',
     saveToNoteSuccess: '对话已保存到笔记。',
     saveToNoteFailed: '保存对话到笔记失败。',
+    copy: '复制',
+    copyDiagram: '复制图表源码',
+    copyFormula: '复制公式源码',
+    copied: '已复制',
+    copyFailed: '复制失败，请重试。',
   },
   setup: {
     desktopRequired: 'OpenYOLO 仅支持 Obsidian 桌面端。',

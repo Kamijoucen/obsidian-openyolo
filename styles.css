@@ -1561,9 +1561,94 @@ button.yolo-chat-mode-select-item {
   text-decoration: underline;
 }
 
-.yolo-streaming-math-pending {
+.yolo-markdown-fallback {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.yolo-streaming-markdown {
+  position: relative;
+}
+
+.yolo-markdown-staging {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+  pointer-events: none;
+  contain: layout;
+}
+
+.yolo-chat-messages .yolo-markdown-rendered .mermaid,
+.yolo-chat-messages .yolo-markdown-rendered .math-block {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.yolo-markdown-copy {
+  position: relative;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.yolo-markdown-copy-block {
+  display: block;
+  padding-top: 28px;
+}
+
+.yolo-markdown-copy-inline {
+  display: inline-block;
+  padding-right: 24px;
+}
+
+.yolo-markdown-copy > button.yolo-markdown-copy-button {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 2px 6px;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  background: var(--background-secondary);
+  border: 0;
+  border-radius: var(--radius-s);
+  box-shadow: none;
+  cursor: pointer;
+}
+
+.yolo-markdown-copy-button > span {
+  display: inline-flex;
+}
+
+.yolo-markdown-copy-button svg {
+  width: 14px;
+  height: 14px;
+}
+
+.yolo-markdown-copy-inline > button.yolo-markdown-copy-button {
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 2px 3px;
+  background: transparent;
+}
+
+.yolo-markdown-copy > button.yolo-markdown-copy-button:hover,
+.yolo-markdown-copy > button.yolo-markdown-copy-button:focus-visible {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+
+.yolo-markdown-copy > button.yolo-markdown-copy-button.is-copied {
+  color: var(--text-success);
+}
+
+/* Mermaid's source preview has a native copy button until the SVG replaces it. */
+.yolo-markdown-copy > pre > .copy-code-button {
+  display: none;
 }
 
 /*
@@ -1593,6 +1678,20 @@ button.yolo-chat-mode-select-item {
   min-width: 0;
 }
 
+/* Continuous text and inline code must wrap before the timeline clips them. */
+.yolo-chat-messages .yolo-markdown-rendered {
+  overflow-wrap: anywhere;
+}
+
+.yolo-chat-messages .yolo-markdown-rendered :not(pre) > code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  /* Repeated fragment padding can overflow a line even when its text fits. */
+  -webkit-box-decoration-break: slice;
+  box-decoration-break: slice;
+}
+
 /* Tables: fill the panel and wrap content instead of horizontally scrolling.
  * `.table-wrapper` is what newer Obsidian wraps `<table>` in; the `table`
  * selector is a fallback for older versions that render `<table>` directly.
@@ -1613,6 +1712,13 @@ button.yolo-chat-mode-select-item {
 .yolo-chat-messages .yolo-markdown-rendered pre {
   max-width: 100%;
   overflow-x: auto;
+}
+
+.yolo-chat-messages .yolo-markdown-rendered pre,
+.yolo-chat-messages .yolo-markdown-rendered pre code {
+  white-space: pre;
+  overflow-wrap: normal;
+  word-break: normal;
 }
 
 .yolo-chat-messages {
