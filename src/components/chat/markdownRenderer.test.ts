@@ -3,7 +3,7 @@
  * @jest-environment-options {"customExportConditions": ["node", "node-addons"]}
  */
 /* eslint-disable @typescript-eslint/unbound-method -- Jest assertions inspect mocked methods without invoking them. */
-import { type App, MarkdownRenderer } from 'obsidian'
+import { type App, type EventRef, MarkdownRenderer } from 'obsidian'
 
 import {
   ChatMarkdownRenderer,
@@ -19,10 +19,29 @@ const flush = async () => {
 describe('ChatMarkdownRenderer', () => {
   let host: HTMLElement
   let renderer: ChatMarkdownRenderer
-  const app = {} as App
+  let timeline: HTMLElement | null
+  const listeners = new Map<EventRef, () => void>()
+  const workspace = {
+    on: jest.fn((_name: string, callback: () => void) => {
+      const ref = {} as EventRef
+      listeners.set(ref, callback)
+      return ref
+    }),
+    offref: jest.fn((ref: EventRef) => {
+      listeners.delete(ref)
+    }),
+  }
+  const app = { workspace } as unknown as App
+  const changeProcessors = () => {
+    ;[...listeners.values()].forEach((callback) => callback())
+  }
 
   beforeEach(() => {
     jest.useFakeTimers()
+    timeline = null
+    listeners.clear()
+    workspace.on.mockClear()
+    workspace.offref.mockClear()
     nativeRender.mockReset()
     nativeRender.mockImplementation(async (_app, source, element) => {
       element.textContent = source
@@ -36,6 +55,7 @@ describe('ChatMarkdownRenderer', () => {
   afterEach(() => {
     renderer.dispose()
     host.remove()
+    timeline?.remove()
     jest.useRealTimers()
   })
 
@@ -168,6 +188,172 @@ describe('ChatMarkdownRenderer', () => {
     await flush()
     expect(host.textContent).toBe('Recovered')
     warn.mockRestore()
+  })
+
+  it('replaces the trust prompt as soon as Allow triggers a processor change, without new text', async () => {
+    let trusted = false
+    nativeRender.mockImplementation(async (_app, _source, stage) => {
+      if (trusted) {
+        stage.appendChild(
+          document.createElementNS('http://www.w3.org/2000/svg', 'svg'),
+        )
+      } else {
+        const allow = stage.appendChild(document.createElement('button'))
+        allow.textContent = 'Allow'
+        allow.addEventListener('click', () => {
+          trusted = true
+          changeProcessors()
+        })
+      }
+    })
+    const source = '```mermaid\ngraph LR\nA --> B\n```'
+    renderer.update(source, false)
+    await flush()
+    const oldOwner = nativeRender.mock.calls[0][4]
+    expect(workspace.on).toHaveBeenCalledWith(
+      'post-processor-change',
+      expect.any(Function),
+    )
+    host.querySelector('button')!.click()
+    await flush()
+    expect(host.querySelector('button')).toBeNull()
+    expect(host.querySelector('svg')).not.toBeNull()
+    expect(nativeRender.mock.calls.map((call) => call[1])).toEqual([
+      source,
+      source,
+    ])
+    expect(oldOwner.unload).toHaveBeenCalledTimes(1)
+    renderer.update(source, false)
+    expect(nativeRender).toHaveBeenCalledTimes(2)
+  })
+
+  it('discards an in-flight render invalidated by a processor change and renders the latest text', async () => {
+    let finish!: () => void
+    nativeRender.mockImplementationOnce(async (_app, _source, stage) => {
+      stage.textContent = 'Stale trust prompt'
+      await new Promise<void>((resolve) => {
+        finish = resolve
+      })
+    })
+    renderer.update('Diagram', true)
+    const staleStage = nativeRender.mock.calls[0][2]
+    const staleOwner = nativeRender.mock.calls[0][4]
+    changeProcessors()
+    changeProcessors()
+    renderer.update('Diagram and new text', false)
+    expect(nativeRender).toHaveBeenCalledTimes(1)
+    finish()
+    await flush()
+    expect(staleStage.isConnected).toBe(false)
+    expect(staleOwner.unload).toHaveBeenCalled()
+    expect(host.textContent).toBe('Diagram and new text')
+    expect(nativeRender).toHaveBeenCalledTimes(2)
+  })
+
+  it('refreshes identical streaming content and cancels queued refreshes on disposal', async () => {
+    renderer.update('Streaming diagram', true)
+    await flush()
+    changeProcessors()
+    await jest.advanceTimersByTimeAsync(100)
+    expect(nativeRender).toHaveBeenCalledTimes(2)
+    changeProcessors()
+    renderer.dispose()
+    changeProcessors()
+    await jest.runAllTimersAsync()
+    expect(workspace.offref).toHaveBeenCalledWith(
+      workspace.on.mock.results[0].value,
+    )
+    expect(listeners.size).toBe(0)
+    expect(nativeRender).toHaveBeenCalledTimes(2)
+    expect(host.children).toHaveLength(0)
+  })
+
+  it('navigates both footnote directions within this reply and updates scroll following', async () => {
+    timeline = document.createElement('div')
+    timeline.className = 'yolo-chat-messages'
+    document.body.appendChild(timeline)
+    timeline.appendChild(host)
+    Object.defineProperty(timeline, 'clientHeight', { value: 200 })
+    timeline.getBoundingClientRect = () => ({ top: 20 }) as DOMRect
+    const onScroll = jest.fn()
+    timeline.addEventListener('scroll', onScroll)
+    nativeRender.mockImplementation(async (_app, _source, stage) => {
+      const reference = stage.appendChild(document.createElement('sup'))
+      reference.dataset.footnoteId = reference.id = 'fnref-1-doc'
+      const forward = reference.appendChild(document.createElement('a'))
+      forward.className = 'footnote-link'
+      forward.href = '#fn-1-doc'
+      forward.textContent = '[1]'
+      const definition = stage.appendChild(document.createElement('div'))
+      definition.dataset.footnoteId = definition.id = 'fn-1-doc'
+      const back = definition.appendChild(document.createElement('a'))
+      back.className = 'footnote-backref footnote-link'
+      back.href = '#fnref-1-doc'
+      back.appendChild(document.createElement('span')).textContent = '↩'
+      reference.getBoundingClientRect = () =>
+        ({ top: 120 - timeline!.scrollTop, height: 20 }) as DOMRect
+      definition.getBoundingClientRect = () =>
+        ({ top: 920 - timeline!.scrollTop, height: 20 }) as DOMRect
+    })
+    renderer.update('Reply with a footnote', false)
+    await flush()
+    timeline.scrollTop = 300
+    // Another reply can have a matching identifier; it must never be selected.
+    const otherReference = document.createElement('sup')
+    otherReference.id = 'fnref-1-doc'
+    timeline.prepend(otherReference)
+    const footnote = host.querySelector<HTMLElement>('[id="fn-1-doc"]')!
+    const reference = host.querySelector<HTMLElement>('[id="fnref-1-doc"]')!
+    const forward = new MouseEvent('click', { bubbles: true, cancelable: true })
+    host.querySelector('a')!.dispatchEvent(forward)
+    expect(forward.defaultPrevented).toBe(true)
+    expect(timeline.scrollTop).toBe(810)
+    expect(document.activeElement).toBe(footnote)
+    host.querySelector<HTMLSpanElement>('a.footnote-backref span')!.click()
+    expect(timeline.scrollTop).toBe(10)
+    expect(document.activeElement).toBe(reference)
+    expect(onScroll).toHaveBeenCalledTimes(2)
+  })
+
+  it('resolves encoded footnote IDs without treating their contents as CSS selectors', async () => {
+    const id = 'fnref-中文:1[2]-doc'
+    const scroll = jest.fn()
+    nativeRender.mockImplementation(async (_app, _source, stage) => {
+      const reference = stage.appendChild(document.createElement('sup'))
+      reference.id = id
+      reference.scrollIntoView = scroll
+      const back = stage.appendChild(document.createElement('a'))
+      back.className = 'footnote-backref'
+      back.href = `#${encodeURIComponent(id)}`
+    })
+    renderer.update('Encoded footnote', false)
+    await flush()
+    host.querySelector('a')!.click()
+    expect(scroll).toHaveBeenCalledWith({
+      block: 'center',
+      behavior: 'instant',
+    })
+  })
+
+  it('does not fall through to page navigation when a footnote target is missing', async () => {
+    nativeRender.mockImplementation(async (_app, _source, stage) => {
+      const back = stage.appendChild(document.createElement('a'))
+      back.className = 'footnote-backref'
+      back.href = '#fnref-missing%'
+    })
+    renderer.update('Missing reference', false)
+    await flush()
+    const click = new MouseEvent('click', { bubbles: true, cancelable: true })
+    expect(() => host.querySelector('a')!.dispatchEvent(click)).not.toThrow()
+    expect(click.defaultPrevented).toBe(true)
+  })
+
+  it('removes the footnote handler when the reply is disposed', async () => {
+    const remove = jest.spyOn(host, 'removeEventListener')
+    renderer.update('Reply', false)
+    await flush()
+    renderer.dispose()
+    expect(remove).toHaveBeenCalledWith('click', expect.any(Function))
   })
 })
 
