@@ -36,6 +36,12 @@ Install [opencode](https://opencode.ai) and run `opencode auth login` to configu
 
 If OpenYOLO cannot find opencode, set its executable path in the plugin settings.
 
+## Access and permissions
+
+OpenYOLO starts the local opencode executable with the vault as its working directory. The process runs with your OS account permissions and applies your opencode tool and model-provider settings. It receives your prompts and attached content.
+
+OpenYOLO uses Node.js to locate the executable and check that ACP file requests stay inside the vault, including when paths pass through symbolic links. The note picker searches Markdown paths locally and attaches the files you choose. The chat reads images when you paste them into the composer and writes Markdown to the clipboard when you click a diagram or formula copy button.
+
 ## About
 
 Originally forked from [obsidian-yolo](https://github.com/lapis0x0/obsidian-yolo). OpenYOLO is now developed independently and does not maintain upstream compatibility.

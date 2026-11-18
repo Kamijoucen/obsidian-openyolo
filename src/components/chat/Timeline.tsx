@@ -74,16 +74,15 @@ function Timeline({
           switch (entry.kind) {
             case 'user':
               return (
-                <div key={entry.id} className="yolo-chat-timeline-row">
+                <div
+                  key={entry.id}
+                  className="yolo-chat-timeline-row yolo-chat-timeline-row--user"
+                >
                   <UserEntryView entry={entry} />
                 </div>
               )
             case 'assistant':
-              return (
-                <div key={entry.id} className="yolo-chat-timeline-row">
-                  <AssistantEntryView entry={entry} />
-                </div>
-              )
+              return <AssistantEntryView key={entry.id} entry={entry} />
             case 'tool':
               if (shouldHideTodoToolCall(entry.toolCall)) {
                 return null

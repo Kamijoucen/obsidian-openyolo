@@ -201,12 +201,8 @@
 }
 
 /* 用户气泡分隔轮次，推理、正文和工具调用使用时间线的统一间距。 */
-.yolo-chat-timeline-row:has(> .yolo-chat-messages-user) {
+.yolo-chat-timeline-row--user {
   margin-block: var(--size-2-2);
-}
-
-.yolo-chat-timeline-row:has(> .yolo-chat-messages-assistant:empty) {
-  display: none;
 }
 
 /* 输入区与最后一条消息之间留出呼吸感 */

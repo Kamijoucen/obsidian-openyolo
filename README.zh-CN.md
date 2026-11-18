@@ -36,6 +36,12 @@ Obsidian / OpenYOLO ←→ ACP ←→ opencode ←→ AI 模型
 
 如果提示找不到 opencode，可以在插件设置中填写它的可执行文件路径。
 
+## 访问权限
+
+OpenYOLO 以笔记库为工作目录启动本地 opencode。该进程以你的操作系统账户权限运行，使用你在 opencode 中配置的工具权限和模型供应商，并接收你提交的提示词及随附内容。
+
+OpenYOLO 使用 Node.js 查找可执行文件，并检查 ACP 文件请求是否位于库内，包括经过符号链接的路径。笔记选择器在本地搜索 Markdown 路径，并附上你选中的文件。向输入框粘贴图片时，插件会读取该图片。点击图表或公式的复制按钮时，插件会将对应的 Markdown 写入剪贴板。
+
 ## 关于
 
 本项目源自 [obsidian-yolo](https://github.com/lapis0x0/obsidian-yolo)，现已独立开发，不保持上游兼容。

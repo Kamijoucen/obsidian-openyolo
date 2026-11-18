@@ -142,59 +142,63 @@ export const AssistantEntryView = memo(function AssistantEntryView({
   const showReasoning = settings.showReasoning && entry.reasoning.length > 0
   const nonTextBlocks = entry.blocks.filter((block) => block.type !== 'text')
 
+  if (!showReasoning && !entry.text && nonTextBlocks.length === 0) return null
+
   return (
-    <div className="yolo-chat-messages-assistant">
-      {showReasoning ? (
-        <div className="yolo-assistant-message-metadata">
-          <button
-            type="button"
-            className="yolo-assistant-message-metadata-toggle"
-            aria-expanded={reasoningOpen}
-            onClick={() => setReasoningOpen(!reasoningOpen)}
-          >
-            <span className="yolo-assistant-message-metadata-label">
-              <Brain size={12} />
-              <span className="yolo-assistant-message-metadata-label-text">
-                {t('chat.reasoning', 'Reasoning')}
+    <div className="yolo-chat-timeline-row">
+      <div className="yolo-chat-messages-assistant">
+        {showReasoning ? (
+          <div className="yolo-assistant-message-metadata">
+            <button
+              type="button"
+              className="yolo-assistant-message-metadata-toggle"
+              aria-expanded={reasoningOpen}
+              onClick={() => setReasoningOpen(!reasoningOpen)}
+            >
+              <span className="yolo-assistant-message-metadata-label">
+                <Brain size={12} />
+                <span className="yolo-assistant-message-metadata-label-text">
+                  {t('chat.reasoning', 'Reasoning')}
+                </span>
+                <span className="yolo-assistant-message-metadata-toggle-icon">
+                  {reasoningOpen ? (
+                    <ChevronDown size={12} />
+                  ) : (
+                    <ChevronRight size={12} />
+                  )}
+                </span>
               </span>
-              <span className="yolo-assistant-message-metadata-toggle-icon">
-                {reasoningOpen ? (
-                  <ChevronDown size={12} />
-                ) : (
-                  <ChevronRight size={12} />
-                )}
-              </span>
-            </span>
-          </button>
-          {reasoningOpen ? (
-            <div className="yolo-assistant-message-metadata-content">
-              <div className="yolo-assistant-message-metadata-body">
-                <StreamingMarkdown
-                  content={entry.reasoning}
-                  scale="xs"
-                  streaming={entry.streaming}
-                />
+            </button>
+            {reasoningOpen ? (
+              <div className="yolo-assistant-message-metadata-content">
+                <div className="yolo-assistant-message-metadata-body">
+                  <StreamingMarkdown
+                    content={entry.reasoning}
+                    scale="xs"
+                    streaming={entry.streaming}
+                  />
+                </div>
               </div>
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-      {entry.backgroundSupplement &&
-      (entry.text || nonTextBlocks.length > 0) ? (
-        <span className="yolo-assistant-background-label">
-          {t('chat.backgroundSupplement')}
-        </span>
-      ) : null}
-      {entry.text ? (
-        <StreamingMarkdown content={entry.text} streaming={entry.streaming} />
-      ) : null}
-      {nonTextBlocks.length > 0 ? (
-        <div className="yolo-acp-assistant-content-blocks">
-          {nonTextBlocks.map((block, index) => (
-            <NonTextContentBlockView key={index} block={block} />
-          ))}
-        </div>
-      ) : null}
+            ) : null}
+          </div>
+        ) : null}
+        {entry.backgroundSupplement &&
+        (entry.text || nonTextBlocks.length > 0) ? (
+          <span className="yolo-assistant-background-label">
+            {t('chat.backgroundSupplement')}
+          </span>
+        ) : null}
+        {entry.text ? (
+          <StreamingMarkdown content={entry.text} streaming={entry.streaming} />
+        ) : null}
+        {nonTextBlocks.length > 0 ? (
+          <div className="yolo-acp-assistant-content-blocks">
+            {nonTextBlocks.map((block, index) => (
+              <NonTextContentBlockView key={index} block={block} />
+            ))}
+          </div>
+        ) : null}
+      </div>
     </div>
   )
 })

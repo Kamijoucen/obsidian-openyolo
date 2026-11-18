@@ -2,6 +2,7 @@ import esbuild from 'esbuild'
 import process from 'process'
 import { builtinModules } from 'node:module'
 import fs from 'fs'
+import { withoutReactDomScripts } from './scripts/without-react-dom-scripts.mjs'
 
 const manifest = JSON.parse(fs.readFileSync('manifest.json', 'utf8'))
 
@@ -24,6 +25,7 @@ const context = await esbuild.context({
   },
   entryPoints: ['src/main.ts'],
   bundle: true,
+  plugins: [withoutReactDomScripts],
   external: [
     'obsidian',
     'electron',
