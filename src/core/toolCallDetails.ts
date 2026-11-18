@@ -1,10 +1,11 @@
-import type { ToolCallContent } from '@agentclientprotocol/sdk'
+import type { ToolCallContent } from '@agentclientprotocol/sdk/unstable'
 
 import type { ToolCallState } from '../types/chat'
 
 type UnknownRecord = Record<string, unknown>
 
-type SubagentToolDetails = {
+export type SubagentToolDetails = {
+  sessionId: string
   state: string | null
   output: string
   rawOutputText: string
@@ -28,7 +29,8 @@ function nonEmptyString(value: unknown): string | null {
 }
 
 function hasOpenCodeTaskInput(input: UnknownRecord | null): boolean {
-  const agentType = nonEmptyString(input?.subagent_type)
+  const agentType =
+    nonEmptyString(input?.subagent_type) ?? nonEmptyString(input?.agent)
   const description = nonEmptyString(input?.description)
   const prompt = nonEmptyString(input?.prompt)
   return Boolean(agentType && description && prompt)
@@ -77,11 +79,9 @@ export function parseOpenCodeTaskEnvelope(text: string): TaskEnvelope | null {
 }
 
 /**
- * OpenCode exposes task identity under rawOutput.metadata.sessionId and in the
- * task output envelope. Both shapes are runtime-checked because ACP
- * intentionally types rawInput/rawOutput as unknown. Session identity is used
- * only to recognize the result; the UI renders it inline and does not navigate
- * to or maintain a child conversation.
+ * OpenCode 1 uses task envelopes and metadata.sessionId; OpenCode 2 returns
+ * metadata.sessionID and status as soon as the background worker is launched.
+ * A completed delegation tool is not evidence that the worker has finished.
  */
 export function getSubagentToolDetails(
   toolCall: Pick<ToolCallState, 'rawInput' | 'rawOutput'>,
@@ -89,23 +89,25 @@ export function getSubagentToolDetails(
   const input = asRecord(toolCall.rawInput)
   const outputRecord = asRecord(toolCall.rawOutput)
   const metadata = asRecord(outputRecord?.metadata)
-  const rawOutputText = nonEmptyString(outputRecord?.output)
+  const rawOutputText = nonEmptyString(outputRecord?.output) ?? ''
   const envelope = rawOutputText
     ? parseOpenCodeTaskEnvelope(rawOutputText)
     : null
 
-  const metadataSessionId = nonEmptyString(metadata?.sessionId)
+  const metadataSessionId =
+    nonEmptyString(metadata?.sessionID) ?? nonEmptyString(metadata?.sessionId)
 
   // sessionId is extension metadata and may also be used by unrelated tools.
-  // Require both a concrete OpenCode task input and displayable output before
-  // treating a tool result as a subagent result.
-  if (!hasOpenCodeTaskInput(input) || !rawOutputText) return null
+  // Require a concrete task input as well as runtime session identity. Generic
+  // metadata and input.task_id alone are not sufficient to identify a child.
+  if (!hasOpenCodeTaskInput(input)) return null
 
   const sessionId = metadataSessionId ?? envelope?.sessionId
   if (!sessionId) return null
 
   return {
-    state: envelope?.state ?? null,
+    sessionId,
+    state: nonEmptyString(metadata?.status) ?? envelope?.state ?? null,
     output: envelope?.output ?? rawOutputText,
     rawOutputText,
   }

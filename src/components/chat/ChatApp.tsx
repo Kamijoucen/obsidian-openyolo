@@ -18,6 +18,8 @@ export default function ChatApp({ onOpenSettings }: ChatAppProps) {
   const service = useSessionService()
   const { t } = useLanguage()
   const [tabId, setTabId] = useState<string | null>(null)
+  const [viewedChild, setViewedChild] = useState<string | null>(null)
+  const [forking, setForking] = useState(false)
   const activeTabRef = useRef<string | null>(null)
   const targetSessionRef = useRef<string | null>(null)
   const switchSequenceRef = useRef(0)
@@ -33,17 +35,19 @@ export default function ChatApp({ onOpenSettings }: ChatAppProps) {
   const closeTabsExcept = useCallback(
     (activeTabId: string) => {
       for (const tab of service.listTabs()) {
-        if (tab.tabId !== activeTabId) void service.closeTab(tab.tabId)
+        if (tab.tabId !== activeTabId) void service.closeInactiveTab(tab.tabId)
       }
     },
     [service],
   )
 
   const activateSingleTab = useCallback(
-    (nextTabId: string) => {
+    (nextTabId: string, childSessionId: string | null = null) => {
       activeTabRef.current = nextTabId
-      targetSessionRef.current = service.getState(nextTabId)?.sessionId ?? null
+      targetSessionRef.current =
+        childSessionId ?? service.getState(nextTabId)?.sessionId ?? null
       setTabId(nextTabId)
+      setViewedChild(childSessionId)
       closeTabsExcept(nextTabId)
     },
     [closeTabsExcept, service],
@@ -69,7 +73,7 @@ export default function ChatApp({ onOpenSettings }: ChatAppProps) {
       ) {
         return
       }
-      void service.closeTab(loadedTabId)
+      void service.closeInactiveTab(loadedTabId)
     },
     [service],
   )
@@ -137,15 +141,17 @@ export default function ChatApp({ onOpenSettings }: ChatAppProps) {
       void service
         .openHistoryTab(session.sessionId, session.title)
         .then((id) => {
+          const isSubagent =
+            service.getSubagentState(id, session.sessionId) !== null
           if (!mountedRef.current) {
-            closeStaleLoadedTab(id, existingTabIds, false)
+            if (!isSubagent) closeStaleLoadedTab(id, existingTabIds, false)
             return
           }
           if (sequence !== switchSequenceRef.current) {
-            closeStaleLoadedTab(id, existingTabIds)
+            if (!isSubagent) closeStaleLoadedTab(id, existingTabIds)
             return
           }
-          activateSingleTab(id)
+          activateSingleTab(id, isSubagent ? session.sessionId : null)
         })
         .catch(() => {
           if (mountedRef.current && sequence === switchSequenceRef.current) {
@@ -161,18 +167,50 @@ export default function ChatApp({ onOpenSettings }: ChatAppProps) {
     [activateSingleTab, closeStaleLoadedTab, service, t],
   )
 
+  const handleFork = useCallback(() => {
+    if (!tabId || forking) return
+    const sequence = ++switchSequenceRef.current
+    const existingTabIds = new Set(service.listTabs().map((tab) => tab.tabId))
+    setForking(true)
+    void service
+      .forkTab(tabId)
+      .then((id) => {
+        if (!mountedRef.current || sequence !== switchSequenceRef.current) {
+          closeStaleLoadedTab(id, existingTabIds, false)
+          return
+        }
+        activateSingleTab(id)
+      })
+      .catch(() => {
+        if (mountedRef.current && sequence === switchSequenceRef.current)
+          new Notice(t('chat.forkFailed'))
+      })
+      .finally(() => {
+        if (mountedRef.current) setForking(false)
+      })
+  }, [activateSingleTab, closeStaleLoadedTab, forking, service, t, tabId])
+
   return (
     <div className="yolo-chat-container yolo-chat-container--sidebar">
       <HeaderBar
         tabId={tabId}
         onNew={handleNew}
         onOpenHistory={handleOpenHistory}
+        onFork={handleFork}
+        forking={forking}
       />
       <SetupBanner
         availability={availability}
         onOpenSettings={onOpenSettings}
       />
-      {tabId ? <SessionPanel key={tabId} tabId={tabId} /> : null}
+      {tabId ? (
+        <SessionPanel
+          key={tabId}
+          tabId={tabId}
+          viewedChild={viewedChild}
+          onViewChild={setViewedChild}
+        />
+      ) : null}
     </div>
   )
 }

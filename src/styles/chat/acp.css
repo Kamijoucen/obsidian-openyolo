@@ -200,14 +200,18 @@
   padding: 24px 12px;
 }
 
-/* 行间距：在 .yolo-chat-messages 的 gap 之上再拉开，避免气泡与上文相贴 */
-.yolo-chat-messages .yolo-chat-timeline-row {
+/* 用户气泡分隔轮次，推理、正文和工具调用使用时间线的统一间距。 */
+.yolo-chat-timeline-row:has(> .yolo-chat-messages-user) {
   margin-block: var(--size-2-2);
+}
+
+.yolo-chat-timeline-row:has(> .yolo-chat-messages-assistant:empty) {
+  display: none;
 }
 
 /* 输入区与最后一条消息之间留出呼吸感 */
 .yolo-chat-footer {
-  padding-top: var(--size-4-4);
+  padding-top: var(--size-4-3);
 }
 
 .yolo-chat-messages-user {
@@ -218,8 +222,13 @@
 .yolo-chat-messages-assistant {
   display: flex;
   flex-direction: column;
-  gap: var(--size-2-1);
+  gap: var(--size-2-3);
   min-width: 0;
+}
+
+.yolo-assistant-background-label {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
 }
 
 .yolo-acp-generating {
@@ -251,6 +260,7 @@ button.yolo-assistant-message-metadata-toggle {
   display: inline-flex;
   align-items: center;
   width: auto;
+  height: 24px;
   border: none;
   background: transparent;
   box-shadow: none;
@@ -275,7 +285,7 @@ button.yolo-assistant-message-metadata-toggle:hover {
 }
 
 .yolo-assistant-message-metadata-content {
-  margin: 2px 0 6px;
+  margin-block-start: var(--size-2-1);
 }
 
 .yolo-assistant-message-metadata-body {
@@ -513,6 +523,7 @@ button.yolo-assistant-message-metadata-toggle:hover {
 }
 
 .yolo-acp-textarea {
+  height: var(--yolo-composer-height, auto);
   width: 100%;
   border: none;
   background: transparent;
@@ -637,10 +648,18 @@ button.yolo-chat-user-input-submit-button-circle.is-stop {
   outline-offset: 1px;
 }
 
-.yolo-acp-attachment-error {
-  color: var(--text-error);
+.yolo-acp-attachment-error,
+.yolo-acp-attachment-status {
   font-size: var(--font-ui-smaller);
   line-height: 1.4;
+}
+
+.yolo-acp-attachment-error {
+  color: var(--text-error);
+}
+
+.yolo-acp-attachment-status {
+  color: var(--text-muted);
 }
 /* 选择器弹层（portal 到 body，向上弹出，位置由 JS 计算） */
 

@@ -1,5 +1,7 @@
 {
   "compilerOptions": {
+    "rootDir": ".",
+    "types": ["node", "jest"],
     "inlineSourceMap": true,
     "inlineSources": true,
     "module": "ESNext",

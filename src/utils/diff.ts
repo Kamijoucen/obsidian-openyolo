@@ -1,5 +1,5 @@
 import {
-  AdvancedLinesDiffComputer,
+  DefaultLinesDiffComputer,
   ILinesDiffComputerOptions,
   LineRangeMapping,
 } from 'vscode-diff'
@@ -81,7 +81,7 @@ export function createInlineDiffLines(
     computeMoves: false,
     maxComputationTimeMs: DIFF_MAX_COMPUTATION_TIME_MS,
   }
-  const advDiffComputer = new AdvancedLinesDiffComputer()
+  const advDiffComputer = new DefaultLinesDiffComputer()
   const advLineChanges = advDiffComputer.computeDiff(
     originalLines,
     modifiedLines,
@@ -92,10 +92,10 @@ export function createInlineDiffLines(
   let lastOriginalEndLineNumberExclusive = 1
 
   advLineChanges.forEach((change: LineRangeMapping) => {
-    const oStart = change.originalRange.startLineNumber
-    const oEnd = change.originalRange.endLineNumberExclusive
-    const mStart = change.modifiedRange.startLineNumber
-    const mEnd = change.modifiedRange.endLineNumberExclusive
+    const oStart = change.original.startLineNumber
+    const oEnd = change.original.endLineNumberExclusive
+    const mStart = change.modified.startLineNumber
+    const mEnd = change.modified.endLineNumberExclusive
 
     if (oStart > lastOriginalEndLineNumberExclusive) {
       const unchanged = originalLines.slice(

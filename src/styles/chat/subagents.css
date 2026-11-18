@@ -1,0 +1,56 @@
+.yolo-acp-session-content,
+.yolo-subagent-browser {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.yolo-acp-session-content[hidden] {
+  display: none;
+}
+
+.yolo-subagent-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.yolo-subagent-status {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.yolo-toolcall-header-row > .yolo-subagent-status {
+  align-self: center;
+  white-space: nowrap;
+}
+
+.yolo-subagent-browser-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px var(--yolo-chat-sidebar-inline-padding, 12px);
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.yolo-subagent-browser-footer {
+  flex-shrink: 0;
+  padding: 8px 12px;
+  border-top: 1px solid var(--background-modifier-border);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  text-align: center;
+}
+
+.yolo-acp-open-subagent {
+  flex-shrink: 0;
+  height: auto;
+  padding: 2px var(--yolo-toolcall-header-padding-x);
+  color: var(--text-accent);
+  font: inherit;
+  white-space: nowrap;
+}

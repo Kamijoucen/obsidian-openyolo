@@ -1,4 +1,7 @@
-import type { SessionConfigOption, SessionMode } from '@agentclientprotocol/sdk'
+import type {
+  SessionConfigOption,
+  SessionMode,
+} from '@agentclientprotocol/sdk/unstable'
 import {
   Brain,
   Check,

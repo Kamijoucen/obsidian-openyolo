@@ -30,6 +30,7 @@ export type TranslationKeys = {
     imageTooLarge: string
     imageCountLimit: string
     imageTotalLimit: string
+    imageReading: string
     imageReadFailed: string
     diffPreviewTruncated: string
     searchNotes: string
@@ -38,6 +39,7 @@ export type TranslationKeys = {
     modeBuild: string
     searchModels: string
     reasoning: string
+    backgroundSupplement: string
     todoTitle: string
     todoPending: string
     todoInProgress: string
@@ -50,6 +52,18 @@ export type TranslationKeys = {
     todoCollapse: string
     subagentOutput: string
     subagentRunning: string
+    openSubagent: string
+    subagentUntitled: string
+    subagentCreated: string
+    subagentCompleted: string
+    subagentFailed: string
+    subagentInterrupted: string
+    subagentUnknown: string
+    subagentReadOnly: string
+    backToConversation: string
+    forkConversation: string
+    forking: string
+    forkFailed: string
     permissionTitle: string
     allowOnce: string
     allowAlways: string

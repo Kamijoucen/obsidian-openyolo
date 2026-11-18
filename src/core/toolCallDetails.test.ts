@@ -1,4 +1,4 @@
-import type { ToolCallContent } from '@agentclientprotocol/sdk'
+import type { ToolCallContent } from '@agentclientprotocol/sdk/unstable'
 
 import {
   getSubagentToolDetails,
@@ -40,6 +40,7 @@ describe('OpenCode subagent tool details', () => {
         },
       }),
     ).toEqual({
+      sessionId: 'ses_child_from_metadata',
       state: 'completed',
       output: 'Found three relevant notes.\n\n- First\n- Second',
       rawOutputText: completedOutput,
@@ -242,13 +243,14 @@ describe('OpenCode subagent tool details', () => {
     })
 
     expect(details).toEqual({
+      sessionId: 'ses_background',
       state: 'running',
       output: 'The task is working in the background.',
       rawOutputText: runningOutput,
     })
   })
 
-  it('ignores metadata-only tasks because there is nothing to display', () => {
+  it('retains metadata-only task identity for history browsing', () => {
     const metadataOnly = getSubagentToolDetails({
       rawInput: {
         subagent_type: 'explore',
@@ -263,6 +265,46 @@ describe('OpenCode subagent tool details', () => {
         },
       },
     })
-    expect(metadataOnly).toBeNull()
+    expect(metadataOnly).toEqual({
+      sessionId: 'ses_background_without_envelope',
+      state: null,
+      output: '',
+      rawOutputText: '',
+    })
+  })
+
+  it('recognizes OpenCode 2 background delegation without output text', () => {
+    expect(
+      getSubagentToolDetails({
+        rawInput: {
+          agent: 'explore',
+          description: 'Read test notes',
+          prompt: 'Read the fake diary',
+        },
+        rawOutput: {
+          metadata: {
+            sessionID: 'ses_v2',
+            status: 'running',
+            truncated: false,
+          },
+        },
+      }),
+    ).toEqual({
+      sessionId: 'ses_v2',
+      state: 'running',
+      output: '',
+      rawOutputText: '',
+    })
+  })
+
+  it('does not mistake other tools using an agent field for a delegation', () => {
+    expect(
+      getSubagentToolDetails({
+        rawInput: { agent: 'explore', query: 'notes' },
+        rawOutput: {
+          metadata: { sessionID: 'ses_unrelated', status: 'running' },
+        },
+      }),
+    ).toBeNull()
   })
 })

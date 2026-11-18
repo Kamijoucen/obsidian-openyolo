@@ -11,12 +11,14 @@ import * as os from 'node:os'
 import * as nodePath from 'node:path'
 
 import type { App } from 'obsidian'
+import { normalizePath } from 'obsidian'
 
 import type { FsBridgeFileSystem } from './fsBridge'
 import { FsBridge, FsBridgeError } from './fsBridge'
 
 type AdapterMock = {
   getBasePath: () => string
+  getFullPath: (relative: string) => string
   exists: jest.Mock<Promise<boolean>, [string]>
   read: jest.Mock<Promise<string>, [string]>
   write: jest.Mock<Promise<void>, [string, string]>
@@ -43,6 +45,11 @@ function makeApp(basePath = '/vault/root'): {
 } {
   const adapter: AdapterMock = {
     getBasePath: () => basePath,
+    getFullPath: (relative) => {
+      const platformPath =
+        process.platform === 'win32' ? nodePath.win32 : nodePath.posix
+      return platformPath.join(basePath, ...relative.split('/'))
+    },
     exists: jest.fn((_path: string) => Promise.resolve(true)),
     read: jest.fn((_path: string) => Promise.resolve('file content')),
     write: jest.fn((_path: string, _content: string) => Promise.resolve()),
@@ -63,6 +70,7 @@ function makeRealApp(basePath: string): { adapter: AdapterMock; app: App } {
     nodePath.join(basePath, ...relative.split('/'))
   const adapter: AdapterMock = {
     getBasePath: () => basePath,
+    getFullPath: absolute,
     exists: jest.fn(async (relative: string) => {
       try {
         await access(absolute(relative))
@@ -187,11 +195,67 @@ describe('FsBridge', () => {
   })
 
   it('throws when reading a missing file', async () => {
-    const { adapter, bridge } = makeApp()
-    adapter.exists.mockResolvedValue(false)
+    const { bridge, fileSystem } = makeApp()
+    fileSystem.lstat.mockImplementation(async (candidate) => {
+      if (candidate.endsWith('/no.md')) throw missingPathError()
+      return { isDirectory: () => true }
+    })
     await expect(
       bridge.readTextFile({ sessionId: 's1', path: '/vault/root/no.md' }),
     ).rejects.toThrow('File not found')
+  })
+
+  it('rejects a POSIX filename that the adapter would treat as nested folders', async () => {
+    await withPlatform('linux', async () => {
+      const { adapter, bridge } = makeApp()
+      const params = { sessionId: 's1', path: '/vault/root/example\\note.md' }
+
+      await expect(bridge.readTextFile(params)).rejects.toThrow('Ambiguous')
+      await expect(
+        bridge.writeTextFile({ ...params, content: 'note' }),
+      ).rejects.toThrow('Ambiguous')
+      expect(adapter.read).not.toHaveBeenCalled()
+      expect(adapter.write).not.toHaveBeenCalled()
+      expect(adapter.mkdir).not.toHaveBeenCalled()
+    })
+  })
+
+  it('checks the disk target of the Unicode-normalized key before a read', async () => {
+    await withPlatform('darwin', async () => {
+      const { adapter, bridge, fileSystem } = makeApp()
+      jest
+        .mocked(normalizePath)
+        .mockImplementationOnce((value) => value.normalize('NFC'))
+
+      await bridge.readTextFile({
+        sessionId: 's1',
+        path: '/vault/root/notes/cafe\u0301.md',
+      })
+
+      expect(fileSystem.realpath).toHaveBeenCalledWith(
+        '/vault/root/notes/café.md',
+      )
+      expect(fileSystem.realpath).not.toHaveBeenCalledWith(
+        '/vault/root/notes/cafe\u0301.md',
+      )
+      expect(adapter.read).toHaveBeenCalledWith('notes/café.md')
+    })
+  })
+
+  it('rejects a filename whose spaces change when the adapter normalizes it', async () => {
+    const { adapter, bridge } = makeApp()
+    jest
+      .mocked(normalizePath)
+      .mockImplementationOnce((value) => value.replace('\u00a0', ' '))
+
+    await expect(
+      bridge.writeTextFile({
+        sessionId: 's1',
+        path: '/vault/root/my\u00a0note.md',
+        content: 'note',
+      }),
+    ).rejects.toThrow('Ambiguous')
+    expect(adapter.write).not.toHaveBeenCalled()
   })
 
   it('writes a file, creating parent folders as needed', async () => {
@@ -206,6 +270,30 @@ describe('FsBridge', () => {
     })
     expect(adapter.mkdir).toHaveBeenCalledWith('a/b')
     expect(adapter.write).toHaveBeenCalledWith('a/b/c.md', 'hello')
+  })
+
+  it('checks an updated adapter mapping after creating parent folders', async () => {
+    const { adapter, bridge, fileSystem } = makeApp()
+    let created = false
+    adapter.exists.mockResolvedValue(false)
+    adapter.getFullPath = (relative) => {
+      const mapped = created ? relative.replace(/^parent/, 'Parent') : relative
+      return `/vault/root/${mapped}`
+    }
+    adapter.mkdir.mockImplementation(async () => {
+      created = true
+    })
+
+    await bridge.writeTextFile({
+      sessionId: 's1',
+      path: '/vault/root/parent/note.md',
+      content: 'note',
+    })
+
+    expect(fileSystem.realpath).toHaveBeenLastCalledWith(
+      '/vault/root/Parent/note.md',
+    )
+    expect(adapter.write).toHaveBeenCalledWith('parent/note.md', 'note')
   })
 
   it('blocks reads through a vault symlink or junction to the outside', async () => {

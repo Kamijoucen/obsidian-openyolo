@@ -1,6 +1,7 @@
 import { PassThrough } from 'node:stream'
 
-import { PROTOCOL_VERSION } from '@agentclientprotocol/sdk'
+import { PROTOCOL_VERSION } from '@agentclientprotocol/sdk/unstable'
+import type { SessionNotification } from '@agentclientprotocol/sdk/unstable'
 
 import { AcpClient } from './client'
 import type {
@@ -242,6 +243,72 @@ describe('AcpClient lifecycle', () => {
     await client.dispose()
   })
 
+  it('negotiates OpenCode child updates and routes validated child content separately', async () => {
+    const fakeProcess = makeProcess()
+    const client = makeClient(fakeProcess)
+    const initializeRequest = observeInitialize(fakeProcess, (request) => {
+      sendResult(fakeProcess, request, { protocolVersion: PROTOCOL_VERSION })
+    })
+    const update = deferred<SessionNotification>()
+    const onStatus = jest.fn()
+    const hooks = makeHooks()
+    hooks.onChildSessionStatus = onStatus
+    hooks.onSessionUpdate = update.resolve
+    await client.connect(hooks)
+    await expect(initializeRequest).resolves.toMatchObject({
+      params: {
+        clientCapabilities: {
+          _meta: { 'opencode/child-session-updates': true },
+        },
+      },
+    })
+    const identity = {
+      rootSessionId: 'root',
+      childSessionId: 'child',
+      parentSessionId: 'root',
+      depth: 1,
+      title: 'Explore',
+    }
+    for (const params of [
+      {
+        ...identity,
+        childSessionId: 'root',
+        type: 'status',
+        status: 'running',
+      },
+      { ...identity, type: 'status', status: 'running' },
+      {
+        ...identity,
+        type: 'update',
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: 'worker output' },
+        },
+      },
+    ]) {
+      fakeProcess.stdout.write(
+        `${JSON.stringify({ jsonrpc: '2.0', method: 'opencode/session/child_update', params })}\n`,
+      )
+    }
+    await expect(update.promise).resolves.toMatchObject({
+      sessionId: 'child',
+      update: {
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: 'worker output' },
+        _meta: {
+          'openyolo/root-session': 'root',
+          'opencode/child-session': { id: 'child', parentID: 'root' },
+        },
+      },
+    })
+    expect(onStatus).toHaveBeenCalledTimes(1)
+    expect(onStatus).toHaveBeenCalledWith({
+      ...identity,
+      type: 'status',
+      status: 'running',
+    })
+  })
+
   it('cleans up the connection and process when initialize returns an error', async () => {
     const fakeProcess = makeProcess()
     const client = makeClient(fakeProcess)
@@ -477,6 +544,38 @@ describe('AcpClient lifecycle', () => {
     expect(onDisconnected).toHaveBeenCalledTimes(1)
     expect(fakeProcess.closeStdin).toHaveBeenCalledTimes(1)
     expect(fakeProcess.kill).not.toHaveBeenCalled()
+    expectCleanedUp(client)
+  })
+
+  it('disconnects and rejects pending requests on a stdin error between writes', async () => {
+    const fakeProcess = makeProcess()
+    const client = makeClient(fakeProcess)
+    const onDisconnected = jest.fn()
+    observeInitialize(fakeProcess, (request) => {
+      sendResult(fakeProcess, request, { protocolVersion: PROTOCOL_VERSION })
+    })
+    await client.connect(makeHooks(onDisconnected))
+
+    const sent = new Promise<void>((resolve) => {
+      fakeProcess.stdin.once('data', () => resolve())
+    })
+    const pending = client.agent().request('session/list')
+    const failed = expect(pending).rejects.toThrow('broken stdin pipe')
+    await sent
+    await new Promise<void>((resolve) => setImmediate(resolve))
+
+    const pipeError = Object.assign(new Error('broken stdin pipe'), {
+      code: 'EPIPE',
+    })
+    fakeProcess.stdin.destroy(pipeError)
+    await failed
+    await fakeProcess.child.exited
+
+    expect(onDisconnected).toHaveBeenCalledTimes(1)
+    expect(onDisconnected).toHaveBeenCalledWith({
+      kind: 'connection-closed',
+      error: pipeError,
+    })
     expectCleanedUp(client)
   })
 

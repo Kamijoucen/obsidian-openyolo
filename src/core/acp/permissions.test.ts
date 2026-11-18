@@ -1,4 +1,4 @@
-import type { RequestPermissionRequest } from '@agentclientprotocol/sdk'
+import type { RequestPermissionRequest } from '@agentclientprotocol/sdk/unstable'
 
 import { PermissionManager } from './permissions'
 

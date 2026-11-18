@@ -1,7 +1,7 @@
 import type {
   PermissionOption,
   ToolCallContent,
-} from '@agentclientprotocol/sdk'
+} from '@agentclientprotocol/sdk/unstable'
 import {
   Check,
   ChevronDown,
@@ -17,11 +17,19 @@ import {
   getSubagentToolDetails,
   isSubagentRawOutputContent,
 } from '../../core/toolCallDetails'
-import type { ToolCallState } from '../../types/chat'
+import type { SubagentInfo, ToolCallState } from '../../types/chat'
 
 import DiffView from './DiffView'
 
 const TEXT_PREVIEW_LIMIT = 4000
+
+const SUBAGENT_STATUS_LABELS = {
+  created: 'chat.subagentCreated',
+  running: 'chat.subagentRunning',
+  completed: 'chat.subagentCompleted',
+  failed: 'chat.subagentFailed',
+  interrupted: 'chat.subagentInterrupted',
+} as const
 
 function StatusIcon({ status }: { status: ToolCallState['status'] }) {
   switch (status) {
@@ -68,6 +76,7 @@ function ToolContentItem({ content }: { content: ToolCallContent }) {
       </pre>
     )
   }
+  if (content.type !== 'content') return null
   const inner = content.content
   if (inner.type === 'text') {
     return (
@@ -100,52 +109,91 @@ function textPreview(text: string): string {
 type ToolCallCardProps = {
   toolCall: ToolCallState
   onPermissionRespond: (toolCallId: string, optionId: string) => void
+  onOpenSubagent?: (sessionId: string) => void
+  subagents?: SubagentInfo[]
 }
 
-function ToolCallCard({ toolCall, onPermissionRespond }: ToolCallCardProps) {
+function ToolCallCard({
+  toolCall,
+  onPermissionRespond,
+  onOpenSubagent,
+  subagents,
+}: ToolCallCardProps) {
   const { t } = useLanguage()
   const [expanded, setExpanded] = useState(false)
   const subagent = getSubagentToolDetails(toolCall)
+  const child = subagents?.find(
+    (child) => child.sessionId === subagent?.sessionId,
+  )
+  const childStatus = child?.status ?? subagent?.state
+  const displayStatus =
+    childStatus === 'running'
+      ? 'in_progress'
+      : childStatus === 'created' || childStatus === 'unknown'
+        ? 'pending'
+        : childStatus === 'failed' || childStatus === 'interrupted'
+          ? 'failed'
+          : childStatus === 'completed'
+            ? 'completed'
+            : toolCall.status
   const visibleContent = subagent
     ? toolCall.content.filter(
         (content) => !isSubagentRawOutputContent(content, subagent),
       )
     : toolCall.content
+  const childRunning = childStatus === 'running' || childStatus === 'created'
   const hasBody =
     visibleContent.length > 0 ||
     toolCall.locations.length > 0 ||
-    subagent !== null
-  const title = toolCall.title || toolCall.kind
+    childRunning ||
+    Boolean(subagent?.output)
+  const title = child?.title || toolCall.title || toolCall.kind
 
   return (
     <div className="yolo-toolcall-container">
       <div className="yolo-toolcall">
-        <button
-          type="button"
-          className="yolo-toolcall-header"
-          aria-expanded={hasBody ? expanded : undefined}
-          onClick={() => hasBody && setExpanded(!expanded)}
-        >
-          <span className="yolo-toolcall-header-icon yolo-toolcall-header-icon--status-inline">
-            <StatusIcon status={toolCall.status} />
-          </span>
-          <span className="yolo-toolcall-header-content">
-            <div className="yolo-toolcall-header-tool-name">
-              <span className="yolo-toolcall-header-title" title={title}>
-                {title}
+        <div className="yolo-toolcall-header-row">
+          <button
+            type="button"
+            className="yolo-toolcall-header"
+            aria-expanded={hasBody ? expanded : undefined}
+            onClick={() => hasBody && setExpanded(!expanded)}
+          >
+            <span className="yolo-toolcall-header-icon yolo-toolcall-header-icon--status-inline">
+              <StatusIcon status={displayStatus} />
+            </span>
+            <span className="yolo-toolcall-header-content">
+              <span className="yolo-toolcall-header-tool-name">
+                <span className="yolo-toolcall-header-title" title={title}>
+                  {title}
+                </span>
               </span>
-            </div>
-          </span>
-          {hasBody ? (
-            <span className="yolo-toolcall-header-icon yolo-toolcall-header-icon--expand">
-              {expanded ? (
-                <ChevronDown size={13} />
-              ) : (
-                <ChevronRight size={13} />
-              )}
+            </span>
+            {hasBody ? (
+              <span className="yolo-toolcall-header-icon yolo-toolcall-header-icon--expand">
+                {expanded ? (
+                  <ChevronDown size={13} />
+                ) : (
+                  <ChevronRight size={13} />
+                )}
+              </span>
+            ) : null}
+          </button>
+          {child && child.status !== 'unknown' ? (
+            <span className="yolo-subagent-status" role="status">
+              {t(SUBAGENT_STATUS_LABELS[child.status])}
             </span>
           ) : null}
-        </button>
+          {subagent && onOpenSubagent && (!subagents || child) ? (
+            <button
+              type="button"
+              className="clickable-icon yolo-acp-open-subagent"
+              onClick={() => onOpenSubagent(subagent.sessionId)}
+            >
+              {t('chat.openSubagent', 'Open subagent session')}
+            </button>
+          ) : null}
+        </div>
         {toolCall.permission ? (
           <div className="yolo-acp-permission">
             <div className="yolo-acp-permission-title">
@@ -188,14 +236,14 @@ function ToolCallCard({ toolCall, onPermissionRespond }: ToolCallCardProps) {
                 ))}
               </div>
             ) : null}
-            {subagent?.state === 'running' ? (
+            {childRunning ? (
               <div className="yolo-acp-subagent-running" role="status">
                 <Loader2
                   size={13}
                   className="yolo-spinner"
                   aria-hidden="true"
                 />
-                {t('chat.subagentRunning', 'Subagent is running.')}
+                {t('chat.subagentRunning', 'Running')}
               </div>
             ) : subagent?.output ? (
               <section className="yolo-acp-subagent-result">

@@ -27,6 +27,7 @@ function makeState(entries: TimelineEntry[]): ChatSessionState {
     commands: [],
     configOptions: [],
     lastStopReason: null,
+    subagents: [],
   }
 }
 

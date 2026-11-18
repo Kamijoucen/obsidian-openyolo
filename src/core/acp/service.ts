@@ -1,6 +1,7 @@
 import type {
   AgentCapabilities,
   ContentBlock,
+  ForkSessionResponse,
   Implementation,
   ListSessionsResponse,
   LoadSessionResponse,
@@ -11,13 +12,21 @@ import type {
   SessionConfigOption,
   SessionMode,
   SessionNotification,
+  SessionUpdate,
   SetSessionConfigOptionResponse,
-} from '@agentclientprotocol/sdk'
+} from '@agentclientprotocol/sdk/unstable'
 import type { App } from 'obsidian'
 
 import type { YoloSettings } from '../../settings/schema/setting.types'
-import type { ChatSessionState, HistorySessionInfo } from '../../types/chat'
+import type {
+  ChatSessionState,
+  HistorySessionInfo,
+  SubagentInfo,
+} from '../../types/chat'
+import { getSubagentToolDetails } from '../toolCallDetails'
 
+import { CHILD_ROOT_META, childIdentityFromMeta } from './childSessions'
+import type { ChildSessionStatusNotification } from './childSessions'
 import { AcpClient, AcpTimeoutError, OpencodeNotFoundError } from './client'
 import type {
   AcpClientFactory,
@@ -59,6 +68,7 @@ type TabRecord = {
   controlError: string | null
   sessionPromise: Promise<string> | null
   attachedGeneration: number | null
+  backgroundGeneration: number | null
   activeTurn: TurnRecord | null
   loadController: AbortController | null
   loadGeneration: number | null
@@ -74,6 +84,17 @@ type TurnRecord = {
   promptStarted: boolean
   settled: Promise<void>
   resolveSettled: () => void
+}
+
+type ChildRecord = {
+  owner: TabRecord
+  views: Map<TabRecord, Pick<SubagentInfo, 'parentSessionId' | 'depth'>>
+  info: SubagentInfo
+  store: SessionStateStore
+  hasLiveHistory: boolean
+  loadedGeneration: number | null
+  loadPromise: Promise<void> | null
+  loadController: AbortController | null
 }
 
 type SessionSetupResponse = Pick<NewSessionResponse, 'configOptions' | 'modes'>
@@ -178,6 +199,8 @@ export class AcpSessionService {
   private closingBySession = new Map<string, Promise<void>>()
   private remoteCloseBySession = new Map<string, Promise<void>>()
   private closingTurns = new Set<TurnRecord>()
+  private children = new Map<string, ChildRecord>()
+  private forkingByTab = new Map<string, Promise<string>>()
   private permissionManager: PermissionManager
   private availabilityListeners = new Set<(state: AvailabilityState) => void>()
   private activityListeners = new Set<() => void>()
@@ -291,6 +314,7 @@ export class AcpSessionService {
     this.connectionGeneration += 1
     this.activeGeneration = 0
     this.permissionManager.cancelAll()
+    this.disconnectChildren(restartError.message)
 
     for (const tab of this.tabs.values()) {
       tab.attachedGeneration = null
@@ -369,30 +393,46 @@ export class AcpSessionService {
         permissionManager: this.permissionManager,
         isSessionActive: (sessionId) =>
           this.isCurrentClient(client, generation) &&
-          this.tabBySession.has(sessionId),
+          this.ownerForSession(sessionId) !== null,
         canRequestPermission: (params) => {
           if (!this.isCurrentClient(client, generation)) return false
-          const tabId = this.tabBySession.get(params.sessionId)
-          const turn = tabId ? this.tabs.get(tabId)?.activeTurn : null
-          return turn != null && !turn.cancelRequested
+          const tab = this.ownerForSession(params.sessionId)
+          if (!tab || tab.closed || tab.activeTurn?.cancelRequested)
+            return false
+          return (
+            this.hasBackgroundActivity(tab.tabId) ||
+            this.receivesBackgroundFollowups(tab)
+          )
         },
         onSessionUpdate: (notification) => {
           if (!this.isCurrentClient(client, generation)) return
           this.handleSessionUpdate(notification)
         },
+        onChildSessionStatus: (notification) => {
+          if (!this.isCurrentClient(client, generation)) return
+          this.handleChildStatus(notification)
+        },
         onPermissionPending: (params) => {
           if (!this.isCurrentClient(client, generation)) return
           this.debug('session/request_permission', params)
-          const tabId = this.tabBySession.get(params.sessionId)
-          const tab = tabId ? this.tabs.get(tabId) : null
+          const tab = this.ownerForSession(params.sessionId)
           tab?.store.setPendingPermission(params.toolCall, params.options)
+          const identity = childIdentityFromMeta(params.toolCall._meta)
+          const child = identity
+            ? this.children.get(identity.id)
+            : this.children.get(params.sessionId)
+          if (child?.owner === tab)
+            child.store.setPendingPermission(params.toolCall, params.options)
         },
         onPermissionSettled: (sessionId, toolCallId) => {
           if (!this.isCurrentClient(client, generation)) return
           this.debug('permission settled', { sessionId, toolCallId })
-          const tabId = this.tabBySession.get(sessionId)
-          if (tabId)
-            this.tabs.get(tabId)?.store.clearPendingPermission(toolCallId)
+          const tab = this.ownerForSession(sessionId)
+          tab?.store.clearPendingPermission(toolCallId)
+          for (const child of this.children.values()) {
+            if (child.owner === tab)
+              child.store.clearPendingPermission(toolCallId)
+          }
         },
         onStderr: (line) => {
           this.debug('stderr', line)
@@ -481,6 +521,7 @@ export class AcpSessionService {
         : errorMessage(disconnect.error)
     void this.trackClientDisposal(client, disconnect)
     this.permissionManager.cancelAll()
+    this.disconnectChildren(reason)
     this.client = null
     this.activeGeneration = 0
     this.connectionGeneration += 1
@@ -515,15 +556,351 @@ export class AcpSessionService {
 
   private handleSessionUpdate(notification: SessionNotification) {
     this.debug('session/update', notification)
+    const update = notification.update
+    const identity = childIdentityFromMeta(update._meta)
+    const rootId = update._meta?.[CHILD_ROOT_META]
+    if (identity) {
+      const owner = this.ownerForSession(
+        typeof rootId === 'string' ? rootId : notification.sessionId,
+      )
+      if (!owner || owner.closed) return
+      const child = this.ensureChild(owner, {
+        sessionId: identity.id,
+        parentSessionId: identity.parentID,
+        title: identity.title ?? '',
+        depth: identity.depth,
+        status: 'unknown',
+        error: null,
+      })
+      if (child) this.applyChildUpdate(child, update)
+      return
+    }
+    const child = this.children.get(notification.sessionId)
+    if (child) {
+      this.applyChildUpdate(child, update)
+      return
+    }
     const tabId = this.tabBySession.get(notification.sessionId)
     if (!tabId) return
     const tab = this.tabs.get(tabId)
     if (!tab || tab.closed) return
-    tab.store.applyUpdate(notification.update)
+    // OpenCode streams autonomous replies as ordinary assistant chunks.
+    // A live, attached session can establish that no client prompt was sent,
+    // but its chunks do not identify a particular background task.
+    const backgroundSupplement =
+      tab.attachedGeneration === this.activeGeneration &&
+      !tab.activeTurn?.promptStarted
+    tab.store.applyUpdate(update, backgroundSupplement)
+    this.discoverChildren(tab, tab.store, notification.sessionId, 0, update)
     if (notification.update.sessionUpdate === 'config_option_update') {
       this.setLastConfigOptions(notification.update.configOptions)
     }
     this.emitActivity()
+  }
+
+  private ownerForSession(sessionId: string): TabRecord | null {
+    const tabId = this.tabBySession.get(sessionId)
+    return (
+      (tabId ? this.tabs.get(tabId) : this.children.get(sessionId)?.owner) ??
+      null
+    )
+  }
+
+  private ensureChild(
+    owner: TabRecord,
+    info: SubagentInfo,
+    allowReference = false,
+  ): ChildRecord | null {
+    if (
+      owner.closed ||
+      this.tabBySession.has(info.sessionId) ||
+      info.sessionId === info.parentSessionId
+    )
+      return null
+    if (
+      info.parentSessionId !== owner.sessionId &&
+      !this.children.get(info.parentSessionId)?.views.has(owner)
+    )
+      return null
+    const existing = this.children.get(info.sessionId)
+    if (existing) {
+      if (existing.owner !== owner && !allowReference) return null
+      const newView = !existing.views.has(owner)
+      existing.views.set(owner, {
+        parentSessionId: info.parentSessionId,
+        depth: info.depth,
+      })
+      if (
+        !owner.store
+          .getState()
+          .subagents.some((child) => child.sessionId === info.sessionId)
+      )
+        this.publishChild(existing)
+      if (newView) {
+        for (const nested of existing.store.getState().subagents) {
+          this.ensureChild(owner, { ...nested, depth: info.depth + 1 }, true)
+        }
+      }
+      return existing
+    }
+    const store = new SessionStateStore(info.title)
+    store.setSessionId(info.sessionId)
+    const child: ChildRecord = {
+      owner,
+      views: new Map([
+        [owner, { parentSessionId: info.parentSessionId, depth: info.depth }],
+      ]),
+      info,
+      store,
+      hasLiveHistory: false,
+      loadedGeneration: null,
+      loadPromise: null,
+      loadController: null,
+    }
+    this.children.set(info.sessionId, child)
+    this.publishChild(child)
+    const parent = this.children.get(info.parentSessionId)
+    for (const [viewer, parentIdentity] of parent?.views ?? []) {
+      if (viewer !== owner)
+        this.ensureChild(
+          viewer,
+          { ...info, depth: parentIdentity.depth + 1 },
+          true,
+        )
+    }
+    return child
+  }
+
+  private publishChild(child: ChildRecord) {
+    for (const [viewer, identity] of child.views) {
+      if (!viewer.closed)
+        viewer.store.upsertSubagent({ ...child.info, ...identity })
+    }
+    this.children
+      .get(child.info.parentSessionId)
+      ?.store.upsertSubagent(child.info)
+    this.emitActivity()
+  }
+
+  private handleChildStatus(event: ChildSessionStatusNotification) {
+    const tabId = this.tabBySession.get(event.rootSessionId)
+    const owner = tabId ? this.tabs.get(tabId) : null
+    if (!owner || owner.closed) return
+    const child = this.ensureChild(owner, {
+      sessionId: event.childSessionId,
+      parentSessionId: event.parentSessionId,
+      depth: event.depth,
+      title: event.title ?? '',
+      status: event.status,
+      error: event.error?.message ?? null,
+    })
+    if (!child) return
+    owner.backgroundGeneration = this.activeGeneration
+    child.info = {
+      ...child.info,
+      status: event.status,
+      title: event.title ?? child.info.title,
+      error: event.error?.message ?? null,
+    }
+    // A creation event precedes all live content. Browsing a worker captured
+    // from creation needs no session/load, avoiding replay/live duplication.
+    if (event.status === 'created') child.hasLiveHistory = true
+    child.store.setTitle(child.info.title)
+    if (event.status === 'created') child.store.markPreparing()
+    else if (event.status === 'running') child.store.markRunning()
+    else {
+      child.store.markTurnEnd(
+        event.status === 'interrupted' ? 'cancelled' : 'end_turn',
+      )
+      if (event.status === 'failed')
+        child.store.setStatus('error', child.info.error)
+    }
+    this.publishChild(child)
+  }
+
+  private applyChildUpdate(child: ChildRecord, update: SessionUpdate) {
+    if (child.owner.closed) return
+    child.store.applyUpdate(update)
+    this.discoverChildren(
+      child.owner,
+      child.store,
+      child.info.sessionId,
+      child.info.depth,
+      update,
+    )
+    if (update.sessionUpdate === 'session_info_update' && update.title) {
+      child.info = { ...child.info, title: update.title }
+      this.publishChild(child)
+    }
+  }
+
+  private discoverChildren(
+    owner: TabRecord,
+    store: SessionStateStore,
+    parentSessionId: string,
+    depth: number,
+    update: SessionUpdate,
+  ) {
+    if (
+      update.sessionUpdate !== 'tool_call' &&
+      update.sessionUpdate !== 'tool_call_update'
+    )
+      return
+    const entry = store
+      .getState()
+      .entries.find(
+        (entry) =>
+          entry.kind === 'tool' &&
+          entry.toolCall.toolCallId === update.toolCallId,
+      )
+    if (entry?.kind !== 'tool') return
+    const details = getSubagentToolDetails(entry.toolCall)
+    if (!details) return
+    const input = entry.toolCall.rawInput
+    const description =
+      typeof input === 'object' &&
+      input !== null &&
+      'description' in input &&
+      typeof input.description === 'string'
+        ? input.description.trim()
+        : ''
+    const child = this.ensureChild(
+      owner,
+      {
+        sessionId: details.sessionId,
+        parentSessionId,
+        title: description || entry.toolCall.title,
+        depth: depth + 1,
+        // Historical delegation metadata can say "running" long after a child
+        // finished. Only live status events establish background activity.
+        status: 'unknown',
+        error: null,
+      },
+      true,
+    )
+    if (
+      child &&
+      typeof input === 'object' &&
+      input !== null &&
+      'prompt' in input &&
+      typeof input.prompt === 'string'
+    ) {
+      child.store.prependUserContext(input.prompt)
+    }
+  }
+
+  getSubagentState(tabId: string, sessionId: string): ChatSessionState | null {
+    const child = this.children.get(sessionId)
+    const tab = this.tabs.get(tabId)
+    return child && tab && child.views.has(tab) ? child.store.getState() : null
+  }
+
+  subscribeSubagent(
+    tabId: string,
+    sessionId: string,
+    listener: (state: ChatSessionState) => void,
+  ): () => void {
+    const child = this.children.get(sessionId)
+    const tab = this.tabs.get(tabId)
+    return child && tab && child.views.has(tab)
+      ? child.store.subscribe(listener)
+      : () => undefined
+  }
+
+  async loadSubagent(tabId: string, sessionId: string): Promise<void> {
+    const child = this.children.get(sessionId)
+    const tab = this.tabs.get(tabId)
+    if (!child || !tab || !child.views.has(tab) || tab.closed)
+      throw new Error('Unknown subagent session')
+    if (
+      child.hasLiveHistory ||
+      child.loadedGeneration === this.activeGeneration
+    )
+      return
+    if (child.loadPromise) return child.loadPromise
+    const loading = this.loadSubagentHistory(child)
+    child.loadPromise = loading
+    try {
+      await loading
+    } finally {
+      if (child.loadPromise === loading) child.loadPromise = null
+    }
+  }
+
+  private async loadSubagentHistory(child: ChildRecord) {
+    await this.ensureStarted()
+    const generation = this.activeGeneration
+    const controller = new AbortController()
+    child.loadController = controller
+    if (child.owner.closed) return
+    child.store.resetForReplay(child.info.sessionId)
+    try {
+      await this.request(
+        'session/load',
+        {
+          sessionId: child.info.sessionId,
+          cwd: this.vaultCwd(),
+          mcpServers: [],
+        },
+        { generation, signal: controller.signal },
+      )
+      if (child.owner.closed) return
+      child.loadedGeneration = generation
+      if (child.info.status === 'running') child.store.setStatus('running')
+      else child.store.markTurnEnd(null)
+    } catch (error) {
+      if (!child.owner.closed && child.loadController === controller)
+        child.store.setStatus('error', this.friendlyError(error))
+      throw error
+    } finally {
+      if (child.loadController === controller) child.loadController = null
+    }
+  }
+
+  private disconnectChildren(reason: string) {
+    for (const child of this.children.values()) {
+      child.loadController?.abort(new Error(reason))
+      child.loadController = null
+      child.loadPromise = null
+      child.loadedGeneration = null
+      child.hasLiveHistory = false
+      if (child.info.status === 'created' || child.info.status === 'running') {
+        child.info = { ...child.info, status: 'unknown', error: reason }
+        child.store.markTurnEnd(null)
+        this.publishChild(child)
+      }
+      if (child.store.getState().status === 'loading')
+        child.store.setStatus('error', reason)
+    }
+  }
+
+  hasBackgroundActivity(tabId: string): boolean {
+    const tab = this.tabs.get(tabId)
+    return (
+      tab != null &&
+      (tab.activeTurn != null ||
+        tab.store
+          .getState()
+          .subagents.some(
+            (child) => child.status === 'created' || child.status === 'running',
+          ))
+    )
+  }
+
+  private receivesBackgroundFollowups(tab: TabRecord): boolean {
+    return (
+      tab.backgroundGeneration === this.activeGeneration &&
+      tab.attachedGeneration === this.activeGeneration
+    )
+  }
+
+  async closeInactiveTab(tabId: string): Promise<void> {
+    const tab = this.tabs.get(tabId)
+    if (!tab || this.hasBackgroundActivity(tabId)) return
+    // ACP has no completion notification for the parent turn woken by a
+    // child report. Retain that attachment for this connection when switching.
+    if (this.receivesBackgroundFollowups(tab)) return
+    await this.closeTab(tabId)
   }
 
   onActivityChange(listener: () => void): () => void {
@@ -540,11 +917,7 @@ export class AcpSessionService {
   getRunningCount(): number {
     let count = 0
     for (const tab of this.tabs.values()) {
-      if (
-        ['preparing', 'running', 'cancelling'].includes(
-          tab.store.getState().status,
-        )
-      ) {
+      if (this.hasBackgroundActivity(tab.tabId)) {
         count += 1
       }
     }
@@ -597,6 +970,7 @@ export class AcpSessionService {
       controlError: null,
       sessionPromise: null,
       attachedGeneration: null,
+      backgroundGeneration: null,
       activeTurn: null,
       loadController: null,
       loadGeneration: null,
@@ -662,15 +1036,19 @@ export class AcpSessionService {
     return this.listTabs()[0]?.tabId ?? this.createTab()
   }
 
-  async openHistoryTab(sessionId: string, title: string): Promise<string> {
+  async openHistoryTab(
+    sessionId: string,
+    title: string,
+    restoreSelections = true,
+  ): Promise<string> {
     const closing = this.closingBySession.get(sessionId)
     if (closing) await closing
-    const existing = this.tabBySession.get(sessionId)
-    if (existing && this.tabs.has(existing)) return existing
+    const existing = this.ownerForSession(sessionId)
+    if (existing && !existing.closed) return existing.tabId
     const opening = this.openingBySession.get(sessionId)
     if (opening) return opening
 
-    const promise = this.loadHistoryTab(sessionId, title)
+    const promise = this.loadHistoryTab(sessionId, title, restoreSelections)
     this.openingBySession.set(sessionId, promise)
     try {
       return await promise
@@ -681,17 +1059,89 @@ export class AcpSessionService {
     }
   }
 
+  canFork(tabId: string): boolean {
+    const tab = this.tabs.get(tabId)
+    return (
+      tab != null &&
+      !tab.closed &&
+      tab.sessionId !== null &&
+      tab.store.getState().status !== 'loading' &&
+      tab.store.getState().entries.some((entry) => entry.kind === 'user') &&
+      this.client?.agentCapabilities.sessionCapabilities?.fork != null
+    )
+  }
+
+  async forkTab(tabId: string): Promise<string> {
+    const existing = this.forkingByTab.get(tabId)
+    if (existing) return existing
+    const forking = this.forkTabInternal(tabId)
+    this.forkingByTab.set(tabId, forking)
+    try {
+      return await forking
+    } finally {
+      if (this.forkingByTab.get(tabId) === forking)
+        this.forkingByTab.delete(tabId)
+    }
+  }
+
+  private async forkTabInternal(tabId: string): Promise<string> {
+    const source = this.tabs.get(tabId)
+    if (!source || source.closed || !source.sessionId)
+      throw new Error('No conversation to fork')
+    await this.ensureStarted()
+    if (!this.canFork(tabId))
+      throw new Error('ACP session forking is unavailable')
+    await source.controlMutationTail
+    const sessionId = await this.ensureSession(source)
+    const generation = this.activeGeneration
+    const response = await this.request<ForkSessionResponse>(
+      'session/fork',
+      {
+        sessionId,
+        cwd: this.vaultCwd(),
+        mcpServers: [],
+      },
+      { generation },
+    )
+    if (source.closed || this.disposed) {
+      await this.closeRemoteSession(response.sessionId)
+      throw new Error('Conversation was closed while forking')
+    }
+    if (
+      response.sessionId === sessionId ||
+      this.ownerForSession(response.sessionId)
+    ) {
+      throw new Error('ACP fork did not return a new session')
+    }
+    try {
+      // Fork does not replay history. Load the new id before presenting it,
+      // preserving the fork's inherited model and mode rather than defaults.
+      return await this.openHistoryTab(
+        response.sessionId,
+        source.store.getState().title,
+        false,
+      )
+    } catch (error) {
+      if (this.activeGeneration === generation)
+        await this.closeRemoteSession(response.sessionId)
+      throw error
+    }
+  }
+
   private async loadHistoryTab(
     sessionId: string,
     title: string,
+    restoreSelections = true,
   ): Promise<string> {
     await this.ensureStarted()
     const generation = this.activeGeneration
+    // Child registration may have arrived while starting the connection.
+    // History should reuse its owner and render it through the child browser.
+    const existing = this.ownerForSession(sessionId)
+    if (existing && !existing.closed) return existing.tabId
     if (!this.supportsSessionListLoad('load')) {
       throw new Error('ACP agent does not support session/load')
     }
-    const existing = this.tabBySession.get(sessionId)
-    if (existing && this.tabs.has(existing)) return existing
     const tabId = nextTabId()
     const store = new SessionStateStore(title)
     const tab: TabRecord = {
@@ -705,6 +1155,7 @@ export class AcpSessionService {
       controlError: null,
       sessionPromise: null,
       attachedGeneration: null,
+      backgroundGeneration: null,
       activeTurn: null,
       loadController: null,
       loadGeneration: null,
@@ -731,7 +1182,13 @@ export class AcpSessionService {
       if (tab.closed || this.tabBySession.get(sessionId) !== tabId) {
         throw new Error('Tab was closed while loading the session')
       }
-      await this.applySessionSetup(tab, sessionId, response, generation)
+      await this.applySessionSetup(
+        tab,
+        sessionId,
+        response,
+        generation,
+        restoreSelections,
+      )
       this.assertActiveGeneration(generation)
       await this.applyDesiredMode(tab, sessionId, response, generation)
       this.assertActiveGeneration(generation)
@@ -747,6 +1204,7 @@ export class AcpSessionService {
           replacementGeneration !== generation)
       if (!hasReplacement && !tab.closed && this.tabs.get(tabId) === tab) {
         tab.closed = true
+        this.releaseChildViews(tab)
         this.tabs.delete(tabId)
         if (this.tabBySession.get(sessionId) === tabId) {
           this.tabBySession.delete(sessionId)
@@ -768,12 +1226,28 @@ export class AcpSessionService {
     return tabId
   }
 
+  private releaseChildViews(tab: TabRecord) {
+    for (const [sessionId, child] of this.children) {
+      if (!child.views.delete(tab)) continue
+      if (child.views.size > 0) {
+        if (child.owner === tab) child.owner = child.views.keys().next().value!
+        continue
+      }
+      child.loadController?.abort(new Error('Parent conversation closed'))
+      this.permissionManager.cancelSession(sessionId)
+      this.children.delete(sessionId)
+      if (child.loadedGeneration === this.activeGeneration)
+        void this.closeRemoteSession(sessionId)
+    }
+  }
+
   async closeTab(tabId: string): Promise<void> {
     const tab = this.tabs.get(tabId)
     if (!tab) return
     const turn = tab.activeTurn
     const cancellation = turn ? this.cancel(tabId) : Promise.resolve()
     tab.closed = true
+    this.releaseChildViews(tab)
     const sessionId = tab.sessionId
     const opening = sessionId
       ? (this.openingBySession.get(sessionId) ?? null)
@@ -1014,6 +1488,7 @@ export class AcpSessionService {
     sessionId: string,
     response: SessionSetupResponse,
     generation: number,
+    restoreSelections = true,
   ): Promise<void> {
     this.assertActiveGeneration(generation)
     const modes =
@@ -1030,12 +1505,13 @@ export class AcpSessionService {
     if (response.configOptions) {
       tab.store.applyConfigOptions(response.configOptions)
       this.setLastConfigOptions(response.configOptions)
-      await this.applyConfigSelections(
-        tab,
-        sessionId,
-        response.configOptions,
-        generation,
-      )
+      if (restoreSelections)
+        await this.applyConfigSelections(
+          tab,
+          sessionId,
+          response.configOptions,
+          generation,
+        )
     }
     this.assertActiveGeneration(generation)
   }
@@ -1128,7 +1604,7 @@ export class AcpSessionService {
     let timer: TimerHandle | null = null
     try {
       const requestOptions: SendRequestOptions | undefined = controller
-        ? { cancellationSignal: controller.signal }
+        ? { cancellationSignal: controller.signal, stopWaitingOnCancel: true }
         : undefined
       const pending = client.agent().request<T>(method, params, requestOptions)
       const response =
@@ -1597,6 +2073,21 @@ export class AcpSessionService {
     return this.permissionManager.respond(sessionId, toolCallId, optionId)
   }
 
+  respondSubagentPermission(
+    tabId: string,
+    sessionId: string,
+    toolCallId: string,
+    optionId: string,
+  ) {
+    const child = this.children.get(sessionId)
+    const tab = this.tabs.get(tabId)
+    if (!child || !tab || !child.views.has(tab) || tab.closed) return false
+    return (
+      this.respondPermission(child.owner.tabId, toolCallId, optionId) ||
+      this.permissionManager.respond(sessionId, toolCallId, optionId)
+    )
+  }
+
   async dispose(): Promise<void> {
     if (this.disposePromise) return this.disposePromise
     this.disposed = true
@@ -1612,6 +2103,10 @@ export class AcpSessionService {
       }
     }
     this.tabs.clear()
+    for (const child of this.children.values())
+      child.loadController?.abort(new Error('ACP service disposed'))
+    this.children.clear()
+    this.forkingByTab.clear()
     this.tabBySession.clear()
     this.openingBySession.clear()
     this.closingBySession.clear()

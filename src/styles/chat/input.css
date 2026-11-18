@@ -241,7 +241,6 @@ body.is-mobile .yolo-chat-container--mobile-keyboard-managed {
   user-select: text;
   display: flex;
   flex-direction: column;
-  gap: var(--size-4-1);
   padding-block: var(--size-4-1);
   margin-block: calc(var(--size-4-1) * -1);
 
@@ -254,7 +253,7 @@ body.is-mobile .yolo-chat-container--mobile-keyboard-managed {
     flex: 0 0 auto;
     flex-direction: column;
     min-width: 0;
-    gap: inherit;
+    gap: var(--size-2-3);
   }
 
   /* Bottom spacer reserving scroll space for the input overlay (todo panel /

@@ -26,11 +26,20 @@ export function nodeReadableToWeb(
 
 export function nodeWritableToWeb(
   nodeWritable: NodeJS.WritableStream,
+  onError?: (error: Error) => void,
 ): WritableStream<Uint8Array> {
   const destroyable = nodeWritable as NodeJS.WritableStream & {
     destroy: () => void
   }
   return new WritableStream<Uint8Array>({
+    start(controller) {
+      // Node emits pipe errors separately from the write callback. The ACP
+      // connection also needs to close when the error arrives between writes.
+      nodeWritable.on('error', (error: Error) => {
+        controller.error(error)
+        onError?.(error)
+      })
+    },
     write(chunk) {
       return new Promise<void>((resolve, reject) => {
         nodeWritable.write(Buffer.from(chunk), (error?: Error | null) => {
@@ -43,8 +52,11 @@ export function nodeWritableToWeb(
       })
     },
     close() {
-      return new Promise<void>((resolve) => {
-        nodeWritable.end(() => resolve())
+      return new Promise<void>((resolve, reject) => {
+        nodeWritable.end((error?: Error | null) => {
+          if (error) reject(error)
+          else resolve()
+        })
       })
     },
     abort() {

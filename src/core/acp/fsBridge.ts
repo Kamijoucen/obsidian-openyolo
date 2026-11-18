@@ -6,8 +6,8 @@ import type {
   ReadTextFileResponse,
   WriteTextFileRequest,
   WriteTextFileResponse,
-} from '@agentclientprotocol/sdk'
-import type { App } from 'obsidian'
+} from '@agentclientprotocol/sdk/unstable'
+import type { App, FileSystemAdapter } from 'obsidian'
 import { normalizePath } from 'obsidian'
 
 export class FsBridgeError extends Error {
@@ -23,6 +23,13 @@ export type FsBridgeFileSystem = {
 }
 
 const nodeFileSystem: FsBridgeFileSystem = { lstat, realpath }
+
+type VaultPath = {
+  adapter: FileSystemAdapter
+  base: string
+  relative: string
+  target: string
+}
 
 function toForwardSlashes(value: string): string {
   return value.replace(/\\/g, '/')
@@ -47,21 +54,16 @@ export class FsBridge {
     return process.platform === 'win32' ? path.win32 : path.posix
   }
 
-  private vaultBasePath(): string {
-    const adapter = this.app.vault.adapter as { getBasePath?: () => string }
-    if (typeof adapter.getBasePath !== 'function') {
-      throw new FsBridgeError('Vault base path is not available')
-    }
-    return adapter.getBasePath()
-  }
-
-  private resolvedLexicalPaths(absolutePath: string): {
-    base: string
-    relative: string
-    target: string
-  } {
+  private resolveVaultPath(absolutePath: string): VaultPath {
     const platformPath = this.platformPath()
-    const basePath = this.vaultBasePath()
+    const adapter = this.app.vault.adapter as FileSystemAdapter
+    if (
+      typeof adapter.getBasePath !== 'function' ||
+      typeof adapter.getFullPath !== 'function'
+    ) {
+      throw new FsBridgeError('Vault disk paths are not available')
+    }
+    const basePath = adapter.getBasePath()
     if (!platformPath.isAbsolute(basePath)) {
       throw new FsBridgeError(`Vault base path is not absolute: ${basePath}`)
     }
@@ -70,15 +72,43 @@ export class FsBridge {
     }
 
     const base = platformPath.resolve(basePath)
-    const target = platformPath.resolve(absolutePath)
-    const relative = platformPath.relative(base, target)
-    if (relative === '') {
+    const requestedRelative = platformPath.relative(base, absolutePath)
+    if (requestedRelative === '') {
       throw new FsBridgeError(`Path is the vault root: ${absolutePath}`)
     }
-    if (this.isOutside(relative)) {
+    if (this.isOutside(requestedRelative)) {
       throw new FsBridgeError(`Path is outside the vault: ${absolutePath}`)
     }
-    return { base, relative, target }
+    if (process.platform !== 'win32' && requestedRelative.includes('\\')) {
+      throw new FsBridgeError(`Ambiguous vault path: ${absolutePath}`)
+    }
+    const forwardPath = toForwardSlashes(requestedRelative)
+    const relative = normalizePath(forwardPath)
+    if (relative !== forwardPath && relative !== forwardPath.normalize('NFC')) {
+      throw new FsBridgeError(`Ambiguous vault path: ${absolutePath}`)
+    }
+    const target = this.adapterTarget(adapter, base, relative)
+    return { adapter, base, relative, target }
+  }
+
+  private adapterTarget(
+    adapter: FileSystemAdapter,
+    base: string,
+    relative: string,
+  ): string {
+    const platformPath = this.platformPath()
+    // Use the disk path the adapter derives from the same key it will read or
+    // write. Obsidian's key normalization can change its spelling on disk.
+    const target = adapter.getFullPath(relative)
+    const targetRelative = platformPath.relative(base, target)
+    if (
+      !platformPath.isAbsolute(target) ||
+      !targetRelative ||
+      this.isOutside(targetRelative)
+    ) {
+      throw new FsBridgeError(`Adapter path is outside the vault: ${relative}`)
+    }
+    return target
   }
 
   private isOutside(relative: string): boolean {
@@ -91,8 +121,7 @@ export class FsBridge {
   }
 
   toVaultRelativePath(absolutePath: string): string {
-    const { relative } = this.resolvedLexicalPaths(absolutePath)
-    return normalizePath(toForwardSlashes(relative))
+    return this.resolveVaultPath(absolutePath).relative
   }
 
   private async resolveRealPathIfPresent(
@@ -139,32 +168,32 @@ export class FsBridge {
     )
   }
 
-  private async assertExistingPathInside(absolutePath: string): Promise<void> {
-    const { base, target } = this.resolvedLexicalPaths(absolutePath)
-    const [realBase, resolvedTarget] = await Promise.all([
-      this.realVaultBase(base),
-      this.resolveRealPathIfPresent(target),
-    ])
+  private async assertExistingPathInside(
+    realBase: string,
+    target: string,
+  ): Promise<void> {
+    const resolvedTarget = await this.resolveRealPathIfPresent(target)
     if (!resolvedTarget) {
-      throw new FsBridgeError(`File not found: ${absolutePath}`)
+      throw new FsBridgeError(`File not found: ${target}`)
     }
-    this.assertResolvedInside(realBase, resolvedTarget, absolutePath)
+    this.assertResolvedInside(realBase, resolvedTarget, target)
   }
 
   /**
    * Resolves the target or its closest existing ancestor. This catches a
    * symlink/junction in an otherwise not-yet-created path before any mkdir.
    */
-  private async assertWritablePathInside(absolutePath: string): Promise<void> {
-    const { base, target } = this.resolvedLexicalPaths(absolutePath)
-    const realBase = await this.realVaultBase(base)
+  private async assertWritablePathInside(
+    realBase: string,
+    target: string,
+  ): Promise<void> {
     const platformPath = this.platformPath()
     let candidate = target
 
     while (true) {
       const resolved = await this.resolveRealPathIfPresent(candidate)
       if (resolved) {
-        this.assertResolvedInside(realBase, resolved, absolutePath)
+        this.assertResolvedInside(realBase, resolved, target)
         if (candidate !== target) {
           const details = await this.fileSystem.lstat(resolved)
           if (!details.isDirectory()) {
@@ -178,9 +207,7 @@ export class FsBridge {
 
       const parent = platformPath.dirname(candidate)
       if (parent === candidate) {
-        throw new FsBridgeError(
-          `No existing parent found for path: ${absolutePath}`,
-        )
+        throw new FsBridgeError(`No existing parent found for path: ${target}`)
       }
       candidate = parent
     }
@@ -193,14 +220,13 @@ export class FsBridge {
   async readTextFile(
     params: ReadTextFileRequest,
   ): Promise<ReadTextFileResponse> {
-    const relative = this.toVaultRelativePath(params.path)
-    const adapter = this.app.vault.adapter
-    if (!(await adapter.exists(relative))) {
-      throw new FsBridgeError(`File not found: ${params.path}`)
-    }
+    const { adapter, base, relative, target } = this.resolveVaultPath(
+      params.path,
+    )
+    const realBase = await this.realVaultBase(base)
     // Keep the realpath check adjacent to the read to narrow the unavoidable
     // check/use window in the adapter API.
-    await this.assertExistingPathInside(params.path)
+    await this.assertExistingPathInside(realBase, target)
     let content = await adapter.read(relative)
     if (params.line != null || params.limit != null) {
       const lines = content.split('\n')
@@ -215,36 +241,48 @@ export class FsBridge {
   async writeTextFile(
     params: WriteTextFileRequest,
   ): Promise<WriteTextFileResponse> {
-    const relative = this.toVaultRelativePath(params.path)
-    await this.assertWritablePathInside(params.path)
-    await this.ensureParentFolder(relative)
+    const destination = this.resolveVaultPath(params.path)
+    const { adapter, base, relative, target } = destination
+    const realBase = await this.realVaultBase(base)
+    await this.assertWritablePathInside(realBase, target)
+    await this.ensureParentFolder(destination, realBase)
     // Re-resolve immediately before write: mkdir or another actor may have
-    // replaced a checked parent with a symlink/junction in the meantime.
-    await this.assertWritablePathInside(params.path)
-    await this.app.vault.adapter.write(relative, params.content)
+    // changed the adapter's path mapping or a symlink in the meantime.
+    await this.assertWritablePathInside(
+      realBase,
+      this.adapterTarget(adapter, base, relative),
+    )
+    await adapter.write(relative, params.content)
     return {}
   }
 
-  private async ensureParentFolder(relativePath: string): Promise<void> {
-    const segments = relativePath.split('/')
+  private async ensureParentFolder(
+    { adapter, base, relative }: VaultPath,
+    realBase: string,
+  ): Promise<void> {
+    const segments = relative.split('/')
     segments.pop()
-    if (segments.length === 0) return
-    const platformPath = this.platformPath()
-    const base = platformPath.resolve(this.vaultBasePath())
     let current = ''
     for (const segment of segments) {
       current = current ? `${current}/${segment}` : segment
-      if (!(await this.app.vault.adapter.exists(current))) {
+      this.adapterTarget(adapter, base, current)
+      if (!(await adapter.exists(current))) {
+        await this.assertWritablePathInside(
+          realBase,
+          this.adapterTarget(adapter, base, current),
+        )
         try {
-          await this.app.vault.adapter.mkdir(current)
+          await adapter.mkdir(current)
         } catch (error) {
           // Concurrent bridge calls may both observe a missing directory. If
           // one won the race, validate that directory and continue.
-          if (!(await this.app.vault.adapter.exists(current))) throw error
+          if (!(await adapter.exists(current))) throw error
         }
       }
-      const absoluteCurrent = platformPath.resolve(base, ...current.split('/'))
-      await this.assertExistingPathInside(absoluteCurrent)
+      await this.assertExistingPathInside(
+        realBase,
+        this.adapterTarget(adapter, base, current),
+      )
     }
   }
 }

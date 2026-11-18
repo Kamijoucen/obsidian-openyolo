@@ -1,6 +1,7 @@
 /*
- @yolo-version: 1.1.4
+ @yolo-version: 1.2.0
  */
+
 svg.svg-icon.yolo-orbit {
   fill: none;
   stroke: currentColor;
@@ -8,6 +9,7 @@ svg.svg-icon.yolo-orbit {
   stroke-linecap: round;
   stroke-linejoin: round;
 }
+
 /*
  * yolo-popover surface classes —— 项目所有弹窗 / 下拉的视觉地基。
  * 改这块代码 / 写新弹窗前，请通读以下约定（历史曾两次踩坑）。
@@ -131,6 +133,7 @@ svg.svg-icon.yolo-orbit {
     transform: translateY(0) scale(1);
   }
 }
+
 /* Chat input: outer wrapper to anchor settings button at top-right */
 .yolo-chat-input-wrapper {
   position: relative;
@@ -374,7 +377,6 @@ body.is-mobile .yolo-chat-container--mobile-keyboard-managed {
   user-select: text;
   display: flex;
   flex-direction: column;
-  gap: var(--size-4-1);
   padding-block: var(--size-4-1);
   margin-block: calc(var(--size-4-1) * -1);
 }
@@ -388,7 +390,7 @@ body.is-mobile .yolo-chat-container--mobile-keyboard-managed {
     flex: 0 0 auto;
     flex-direction: column;
     min-width: 0;
-    gap: inherit;
+    gap: var(--size-2-3);
   }
 
 /* Bottom spacer reserving scroll space for the input overlay (todo panel /
@@ -1195,6 +1197,7 @@ button.yolo-chat-mode-select-item {
     transform: translateY(0);
   }
 }
+
 .yolo-sr-only {
   position: absolute;
   width: 1px;
@@ -1234,6 +1237,11 @@ button.yolo-chat-mode-select-item {
   font-size: var(--font-ui-smaller);
 }
 
+.yolo-toolcall-header-row {
+  display: flex;
+  align-items: stretch;
+}
+
 /* 用 `.yolo-toolcall` 前缀提升特异度，压住 Obsidian 全局
  * `button:not(.clickable-icon)` 的背景/边框/投影。 */
 .yolo-toolcall button.yolo-toolcall-header {
@@ -1244,6 +1252,7 @@ button.yolo-chat-mode-select-item {
   text-align: left;
   box-sizing: border-box;
   width: 100%;
+  min-width: 0;
   background: transparent;
   border: 0;
   box-shadow: none;
@@ -1316,6 +1325,10 @@ button.yolo-chat-mode-select-item {
 }
 
 .yolo-toolcall-header-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--text-normal);
   font-weight: var(--font-normal);
 }
@@ -1683,6 +1696,20 @@ button.yolo-chat-mode-select-item {
   overflow-wrap: anywhere;
 }
 
+/* Trim the rendered Markdown's outer margins so the timeline sets the space
+ * between messages. Keep paragraph spacing inside each message. */
+.yolo-chat-messages .yolo-streaming-markdown > div > :is(p, ul, ol) {
+  --p-spacing: 0.625em;
+}
+
+.yolo-chat-messages .yolo-streaming-markdown > div > :first-child {
+  margin-block-start: 0;
+}
+
+.yolo-chat-messages .yolo-streaming-markdown > div > :last-child {
+  margin-block-end: 0;
+}
+
 .yolo-chat-messages .yolo-markdown-rendered :not(pre) > code {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -1757,6 +1784,7 @@ button.yolo-chat-mode-select-item {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
 .yolo-popover-surface ul {
   padding: 0;
   list-style: none;
@@ -2310,6 +2338,7 @@ button.yolo-chat-input-model-select .yolo-chat-input-model-select__icon {
     opacity: 0.9;
   }
 }
+
 /* 任务清单面板：作为 .yolo-chat-input-overlay 的子项，浮在输入框上方，可折叠。
  * 定位与层级由 .yolo-chat-input-overlay 统一负责，本组件只关心自身样式。
  * 布局：header（折叠摘要按钮+关闭按钮） → body（列表）
@@ -2561,6 +2590,7 @@ button.yolo-todo-panel__icon-button svg {
     transition: none;
   }
 }
+
 /* ACP 客户端新增元素的补充样式（配合复用的旧版 input/message/popover 样式） */
 
 .yolo-chat-view {
@@ -2763,14 +2793,18 @@ button.yolo-todo-panel__icon-button svg {
   padding: 24px 12px;
 }
 
-/* 行间距：在 .yolo-chat-messages 的 gap 之上再拉开，避免气泡与上文相贴 */
-.yolo-chat-messages .yolo-chat-timeline-row {
+/* 用户气泡分隔轮次，推理、正文和工具调用使用时间线的统一间距。 */
+.yolo-chat-timeline-row:has(> .yolo-chat-messages-user) {
   margin-block: var(--size-2-2);
+}
+
+.yolo-chat-timeline-row:has(> .yolo-chat-messages-assistant:empty) {
+  display: none;
 }
 
 /* 输入区与最后一条消息之间留出呼吸感 */
 .yolo-chat-footer {
-  padding-top: var(--size-4-4);
+  padding-top: var(--size-4-3);
 }
 
 .yolo-chat-messages-user {
@@ -2781,8 +2815,13 @@ button.yolo-todo-panel__icon-button svg {
 .yolo-chat-messages-assistant {
   display: flex;
   flex-direction: column;
-  gap: var(--size-2-1);
+  gap: var(--size-2-3);
   min-width: 0;
+}
+
+.yolo-assistant-background-label {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
 }
 
 .yolo-acp-generating {
@@ -2814,6 +2853,7 @@ button.yolo-assistant-message-metadata-toggle {
   display: inline-flex;
   align-items: center;
   width: auto;
+  height: 24px;
   border: none;
   background: transparent;
   box-shadow: none;
@@ -2838,7 +2878,7 @@ button.yolo-assistant-message-metadata-toggle:hover {
 }
 
 .yolo-assistant-message-metadata-content {
-  margin: 2px 0 6px;
+  margin-block-start: var(--size-2-1);
 }
 
 .yolo-assistant-message-metadata-body {
@@ -3076,6 +3116,7 @@ button.yolo-assistant-message-metadata-toggle:hover {
 }
 
 .yolo-acp-textarea {
+  height: var(--yolo-composer-height, auto);
   width: 100%;
   border: none;
   background: transparent;
@@ -3200,10 +3241,18 @@ button.yolo-chat-user-input-submit-button-circle.is-stop {
   outline-offset: 1px;
 }
 
-.yolo-acp-attachment-error {
-  color: var(--text-error);
+.yolo-acp-attachment-error,
+.yolo-acp-attachment-status {
   font-size: var(--font-ui-smaller);
   line-height: 1.4;
+}
+
+.yolo-acp-attachment-error {
+  color: var(--text-error);
+}
+
+.yolo-acp-attachment-status {
+  color: var(--text-muted);
 }
 /* 选择器弹层（portal 到 body，向上弹出，位置由 JS 计算） */
 
@@ -3349,4 +3398,61 @@ button.yolo-chat-user-input-submit-button-circle.is-stop {
 .yolo-settings-prompt-textarea:focus {
   border-color: var(--background-modifier-border-focus);
   outline: none;
+}
+
+.yolo-acp-session-content,
+.yolo-subagent-browser {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.yolo-acp-session-content[hidden] {
+  display: none;
+}
+
+.yolo-subagent-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.yolo-subagent-status {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.yolo-toolcall-header-row > .yolo-subagent-status {
+  align-self: center;
+  white-space: nowrap;
+}
+
+.yolo-subagent-browser-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px var(--yolo-chat-sidebar-inline-padding, 12px);
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.yolo-subagent-browser-footer {
+  flex-shrink: 0;
+  padding: 8px 12px;
+  border-top: 1px solid var(--background-modifier-border);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  text-align: center;
+}
+
+.yolo-acp-open-subagent {
+  flex-shrink: 0;
+  height: auto;
+  padding: 2px var(--yolo-toolcall-header-padding-x);
+  color: var(--text-accent);
+  font: inherit;
+  white-space: nowrap;
 }

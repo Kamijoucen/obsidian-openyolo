@@ -1,7 +1,7 @@
 import { join } from 'path'
 import { pathToFileURL } from 'url'
 
-import type { ContentBlock } from '@agentclientprotocol/sdk'
+import type { ContentBlock } from '@agentclientprotocol/sdk/unstable'
 import type { App } from 'obsidian'
 import { Notice } from 'obsidian'
 import { memo, useCallback, useEffect, useState } from 'react'
@@ -18,6 +18,7 @@ import ChatInput, { AttachedNote, InputImage } from './ChatInput'
 import type { SubmitResult } from './composer'
 import { FrameBatcher } from './frameBatcher'
 import TodoPanel from './PlanView'
+import SubagentBrowser from './SubagentBrowser'
 import Timeline from './Timeline'
 
 function vaultBasePath(app: App): string {
@@ -90,9 +91,11 @@ function ErrorBanner({ error }: { error: string }) {
 
 type SessionPanelProps = {
   tabId: string
+  viewedChild: string | null
+  onViewChild: (sessionId: string | null) => void
 }
 
-function SessionPanel({ tabId }: SessionPanelProps) {
+function SessionPanel({ tabId, viewedChild, onViewChild }: SessionPanelProps) {
   const service = useSessionService()
   const inputHistory = useInputHistory()
   const app = useApp()
@@ -184,26 +187,48 @@ function SessionPanel({ tabId }: SessionPanelProps) {
 
   if (!state) return null
   const running = ['preparing', 'running', 'cancelling'].includes(state.status)
+  const child = state.subagents.find((child) => child.sessionId === viewedChild)
 
   return (
     <div className="yolo-acp-session is-active">
-      <Timeline state={state} onPermissionRespond={handlePermissionRespond} />
-      <div className="yolo-chat-footer">
-        {state.plan.length > 0 ? <TodoPanel entries={state.plan} /> : null}
-        {state.error ? <ErrorBanner error={state.error} /> : null}
-        <ChatInput
-          running={running}
-          disabled={state.status === 'loading'}
-          commands={state.commands}
-          mode={state.mode}
-          configOptions={state.configOptions}
-          onModeChange={handleModeChange}
-          onConfigOptionChange={handleConfigOptionChange}
-          onSubmit={handleSubmit}
-          onCancel={handleCancel}
-          savingToNote={savingToNote}
-          onSaveToNote={handleSaveToNote}
+      {child ? (
+        <SubagentBrowser
+          key={child.sessionId}
+          tabId={tabId}
+          info={child}
+          onBack={() =>
+            onViewChild(
+              child.parentSessionId === state.sessionId
+                ? null
+                : child.parentSessionId,
+            )
+          }
+          onOpen={onViewChild}
         />
+      ) : null}
+      <div className="yolo-acp-session-content" hidden={child !== undefined}>
+        <Timeline
+          state={state}
+          onPermissionRespond={handlePermissionRespond}
+          onOpenSubagent={onViewChild}
+        />
+        <div className="yolo-chat-footer">
+          {state.plan.length > 0 ? <TodoPanel entries={state.plan} /> : null}
+          {state.error ? <ErrorBanner error={state.error} /> : null}
+          <ChatInput
+            running={running}
+            disabled={state.status === 'loading'}
+            commands={state.commands}
+            mode={state.mode}
+            configOptions={state.configOptions}
+            onModeChange={handleModeChange}
+            onConfigOptionChange={handleConfigOptionChange}
+            onSubmit={handleSubmit}
+            onCancel={handleCancel}
+            savingToNote={savingToNote}
+            onSaveToNote={handleSaveToNote}
+          />
+        </div>
       </div>
     </div>
   )

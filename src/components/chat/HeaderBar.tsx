@@ -1,4 +1,4 @@
-import { History, Plus } from 'lucide-react'
+import { GitFork, History, Plus } from 'lucide-react'
 import {
   memo,
   useCallback,
@@ -127,7 +127,7 @@ function HistoryDropdown({
           setSessions([])
         }
       })
-    const ownerDocument = containerRef.current?.ownerDocument ?? document
+    const ownerDocument = containerRef.current?.ownerDocument ?? activeDocument
     const handleClickOutside = (event: MouseEvent) => {
       const target = event.target as Node
       const targetElement = target.nodeType === 1 ? (target as Element) : null
@@ -240,14 +240,49 @@ type HeaderBarProps = {
   tabId: string | null
   onNew: () => void
   onOpenHistory: (session: HistorySessionInfo) => void
+  onFork: () => void
+  forking: boolean
 }
 
-function HeaderBar({ tabId, onNew, onOpenHistory }: HeaderBarProps) {
+function HeaderBar({
+  tabId,
+  onNew,
+  onOpenHistory,
+  onFork,
+  forking,
+}: HeaderBarProps) {
   const { t } = useLanguage()
+  const service = useSessionService()
+  const [canFork, setCanFork] = useState(
+    () => tabId !== null && service.canFork(tabId),
+  )
+  useEffect(() => {
+    const refresh = () => setCanFork(tabId !== null && service.canFork(tabId))
+    refresh()
+    const unsubscribe = tabId
+      ? service.subscribe(tabId, refresh)
+      : () => undefined
+    const availability = service.onAvailabilityChange(refresh)
+    return () => {
+      unsubscribe()
+      availability()
+    }
+  }, [service, tabId])
   return (
     <div className="yolo-acp-header">
       <HeaderTitle tabId={tabId} />
       <div className="yolo-acp-header-actions">
+        <button
+          type="button"
+          className="clickable-icon"
+          title={forking ? t('chat.forking') : t('chat.forkConversation')}
+          aria-label={t('chat.forkConversation')}
+          disabled={!canFork || forking}
+          aria-busy={forking}
+          onClick={onFork}
+        >
+          <GitFork size={16} />
+        </button>
         <HistoryDropdown onOpenHistory={onOpenHistory} />
         <button
           type="button"

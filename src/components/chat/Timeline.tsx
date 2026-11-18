@@ -11,9 +11,14 @@ import ToolCallCard from './ToolCallCard'
 type TimelineProps = {
   state: ChatSessionState
   onPermissionRespond: (toolCallId: string, optionId: string) => void
+  onOpenSubagent?: (sessionId: string) => void
 }
 
-function Timeline({ state, onPermissionRespond }: TimelineProps) {
+function Timeline({
+  state,
+  onPermissionRespond,
+  onOpenSubagent,
+}: TimelineProps) {
   const { t } = useLanguage()
   const containerRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
@@ -88,6 +93,8 @@ function Timeline({ state, onPermissionRespond }: TimelineProps) {
                   <ToolCallCard
                     toolCall={entry.toolCall}
                     onPermissionRespond={onPermissionRespond}
+                    onOpenSubagent={onOpenSubagent}
+                    subagents={state.subagents}
                   />
                 </div>
               )

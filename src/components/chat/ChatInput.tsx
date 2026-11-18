@@ -1,7 +1,7 @@
 import type {
   AvailableCommand,
   SessionConfigOption,
-} from '@agentclientprotocol/sdk'
+} from '@agentclientprotocol/sdk/unstable'
 import { ArrowUp, FileText, Paperclip, Save, Square, X } from 'lucide-react'
 import { TFile } from 'obsidian'
 import {
@@ -201,6 +201,7 @@ function ChatInput({
     null,
   )
   const [submitting, setSubmitting] = useState(false)
+  const [readingImages, setReadingImages] = useState(false)
   const [attachmentError, setAttachmentError] = useState<string | null>(null)
   const [commandIndex, setCommandIndex] = useState(0)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -326,7 +327,9 @@ function ChatInput({
     if (rejectionMessages.length > 0) {
       setAttachmentError(rejectionMessages.join(' '))
     }
+    if (admission.accepted.length === 0) return
 
+    setReadingImages(true)
     for (const file of admission.accepted) {
       imageUsageRef.current = {
         count: imageUsageRef.current.count + 1,
@@ -353,6 +356,9 @@ function ChatInput({
         })
         .finally(() => {
           pendingImageReadsRef.current.delete(controller)
+          if (mountedRef.current && pendingImageReadsRef.current.size === 0) {
+            setReadingImages(false)
+          }
         })
     }
   }
@@ -397,9 +403,10 @@ function ChatInput({
   useEffect(() => {
     const textarea = textareaRef.current
     if (!textarea) return
-    textarea.setCssProps({ height: 'auto' })
+    // Reset the previous measured height before measuring the new content.
+    textarea.setCssProps({ '--yolo-composer-height': 'auto' })
     textarea.setCssProps({
-      height: `${Math.min(textarea.scrollHeight, 160)}px`,
+      '--yolo-composer-height': `${Math.min(textarea.scrollHeight, 160)}px`,
     })
   }, [text])
 
@@ -409,6 +416,7 @@ function ChatInput({
       running ||
       disabled ||
       submittingRef.current ||
+      pendingImageReadsRef.current.size > 0 ||
       !hasComposerText(trimmed)
     ) {
       return
@@ -418,13 +426,13 @@ function ChatInput({
     setSubmitting(true)
     const draft = {
       text,
-      images,
+      images: imagesRef.current,
       notes,
       externalFiles,
       excludedCurrentPath,
     }
     try {
-      const result = await onSubmit(trimmed, images, attachedNotes)
+      const result = await onSubmit(trimmed, draft.images, attachedNotes)
       if (!mountedRef.current) return
       const settled = settleComposerDraft(draft, result)
       if (settled !== draft) {
@@ -687,6 +695,11 @@ function ChatInput({
               {attachmentError}
             </div>
           ) : null}
+          {readingImages ? (
+            <div className="yolo-acp-attachment-status" role="status">
+              {t('chat.imageReading')}
+            </div>
+          ) : null}
           <div className="yolo-chat-user-input-editor">
             <textarea
               ref={textareaRef}
@@ -740,7 +753,9 @@ function ChatInput({
                   title={t('common.send', 'Send')}
                   aria-label={t('common.send', 'Send')}
                   onClick={() => void doSubmit()}
-                  disabled={running || disabled || submitting || !canSubmit}
+                  disabled={
+                    disabled || submitting || readingImages || !canSubmit
+                  }
                 >
                   <ArrowUp size={14} />
                 </button>

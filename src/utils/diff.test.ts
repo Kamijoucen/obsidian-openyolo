@@ -2,10 +2,30 @@ import {
   DIFF_MAX_INPUT_CHARS,
   DIFF_MAX_INPUT_LINES,
   createBoundedInlineDiff,
+  createInlineDiffLines,
   splitBoundedDiffText,
 } from './diff'
 
 describe('bounded diff inputs', () => {
+  it('preserves unchanged lines around replacements and insertions', () => {
+    const lines = createInlineDiffLines(
+      ['before', 'old', 'after'],
+      ['before', 'new', 'after', 'added'],
+    )
+    expect(
+      lines.map((line) => [
+        line.type,
+        line.tokens.map((token) => token.text).join(''),
+      ]),
+    ).toEqual([
+      ['unchanged', 'before'],
+      ['removed', 'old'],
+      ['added', 'new'],
+      ['unchanged', 'after'],
+      ['added', 'added'],
+    ])
+  })
+
   it('truncates characters before splitting into lines', () => {
     const bounded = splitBoundedDiffText('a'.repeat(DIFF_MAX_INPUT_CHARS + 10))
 

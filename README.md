@@ -10,9 +10,12 @@ OpenYOLO works on **Obsidian desktop** and requires [opencode](https://opencode.
 
 - **Ask about your notes**: automatically include the current note, or attach multiple notes, external text files, and images. Pasting images is supported.
 - **Read and edit notes**: ask AI to summarize content, organize information, or update notes. See its actions and file changes, and allow or reject permission requests when they appear.
-- **Follow task progress**: read replies as they arrive, expand or collapse reasoning, track a todo list, and inspect subtask results within the conversation.
+- **Follow task progress**. Read replies as they arrive, expand or collapse reasoning, and track a todo list.
+- **Browse subagents**. With OpenCode 2, choose **Open subagent session** on the task’s tool card to view live output, tool calls, and history in a read-only view. The task status updates on the same card.
+- **Keep chatting during background tasks**. Once the current turn in the main conversation ends, you can send another message while its subagents are still running. If the main agent sends a follow-up on its own, it appears with the **Background follow-up** label.
 - **Choose your model and mode**: search your configured models, adjust supported reasoning levels, and switch between plan and build modes.
 - **Pick up where you left off**: reopen your latest conversation automatically or switch to an earlier one from the history list.
+- **Fork a conversation**. Use the fork button in the header to copy the entire current conversation history into a new session. This requires ACP fork support from the backend.
 - **Reuse previous prompts**: press ↑ at the start of the input or ↓ at the end to recall text. The latest **32 inputs** are shared across sessions and saved locally across restarts. Editing the text resets browsing to the newest entry.
 - **Save conversations as notes**: export a conversation to Markdown in a folder of your choice, without overwriting existing notes.
 - **Make it your own**: type `/` to select commands or skills. Optionally enable and edit the note-assistant instructions in settings; enabling them writes a section to your vault's `AGENTS.md`.
@@ -26,6 +29,8 @@ Obsidian / OpenYOLO ←→ ACP ←→ opencode ←→ AI model
 ```
 
 ## Get started
+
+For manual installation, download `main.js`, `manifest.json`, and `styles.css` from the [latest release](https://github.com/Kamijoucen/obsidian-openyolo/releases/latest). Place them in `.obsidian/plugins/openyolo/` in your vault, then enable OpenYOLO under **Settings → Community plugins**.
 
 Install [opencode](https://opencode.ai) and run `opencode auth login` to configure a model provider. You're ready to start chatting.
 

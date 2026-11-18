@@ -37,6 +37,11 @@
   font-size: var(--font-ui-smaller);
 }
 
+.yolo-toolcall-header-row {
+  display: flex;
+  align-items: stretch;
+}
+
 /* 用 `.yolo-toolcall` 前缀提升特异度，压住 Obsidian 全局
  * `button:not(.clickable-icon)` 的背景/边框/投影。 */
 .yolo-toolcall button.yolo-toolcall-header {
@@ -47,6 +52,7 @@
   text-align: left;
   box-sizing: border-box;
   width: 100%;
+  min-width: 0;
   background: transparent;
   border: 0;
   box-shadow: none;
@@ -119,6 +125,10 @@
 }
 
 .yolo-toolcall-header-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--text-normal);
   font-weight: var(--font-normal);
 }
@@ -484,6 +494,20 @@
 /* Continuous text and inline code must wrap before the timeline clips them. */
 .yolo-chat-messages .yolo-markdown-rendered {
   overflow-wrap: anywhere;
+}
+
+/* Trim the rendered Markdown's outer margins so the timeline sets the space
+ * between messages. Keep paragraph spacing inside each message. */
+.yolo-chat-messages .yolo-streaming-markdown > div > :is(p, ul, ol) {
+  --p-spacing: 0.625em;
+}
+
+.yolo-chat-messages .yolo-streaming-markdown > div > :first-child {
+  margin-block-start: 0;
+}
+
+.yolo-chat-messages .yolo-streaming-markdown > div > :last-child {
+  margin-block-end: 0;
 }
 
 .yolo-chat-messages .yolo-markdown-rendered :not(pre) > code {

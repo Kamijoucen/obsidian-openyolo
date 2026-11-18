@@ -1,7 +1,7 @@
 import type {
   RequestPermissionRequest,
   RequestPermissionResponse,
-} from '@agentclientprotocol/sdk'
+} from '@agentclientprotocol/sdk/unstable'
 
 export type PermissionRespondHook = {
   onPending: (params: RequestPermissionRequest) => void

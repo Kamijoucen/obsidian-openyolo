@@ -7,12 +7,14 @@ import type {
   PromptResponse,
   SendRequestOptions,
   SessionConfigOption,
+  SessionNotification,
   SetSessionConfigOptionResponse,
-} from '@agentclientprotocol/sdk'
+} from '@agentclientprotocol/sdk/unstable'
 import type { App } from 'obsidian'
 
 import type { YoloSettings } from '../../settings/schema/setting.types'
 
+import type { ChildSessionStatusNotification } from './childSessions'
 import type {
   AcpAgentPort,
   AcpClientHooks,
@@ -22,7 +24,7 @@ import type {
 } from './client'
 import { AcpSessionService } from './service'
 
-jest.mock('@agentclientprotocol/sdk', () => ({}))
+jest.mock('@agentclientprotocol/sdk/unstable', () => ({}))
 jest.mock('./process', () => ({
   resolveOpencodeBinary: jest.fn(),
   spawnOpencodeAcp: jest.fn(),
@@ -177,6 +179,42 @@ class FakeClient implements AcpClientPort {
     this.hooks?.onDisconnected?.(reason)
   }
 
+  emitUpdate(notification: SessionNotification): void {
+    this.hooks?.onSessionUpdate(notification)
+  }
+
+  emitChildStatus(event: ChildSessionStatusNotification): void {
+    this.hooks?.onChildSessionStatus?.(event)
+  }
+
+  requestPermission(sessionId: string, toolCallId: string, childId?: string) {
+    const hooks = this.hooks!
+    const params = {
+      sessionId,
+      toolCall: {
+        toolCallId,
+        _meta: childId
+          ? {
+              'opencode/child-session': {
+                id: childId,
+                parentID: sessionId,
+                depth: 1,
+              },
+            }
+          : undefined,
+      },
+      options: [
+        { optionId: 'once', kind: 'allow_once' as const, name: 'Allow once' },
+      ],
+    }
+    if (!hooks.canRequestPermission?.(params))
+      return Promise.resolve({ outcome: { outcome: 'cancelled' as const } })
+    return hooks.permissionManager.handleRequest(params, {
+      onPending: hooks.onPermissionPending,
+      onSettled: hooks.onPermissionSettled,
+    })
+  }
+
   private request<T>(
     method: string,
     params?: unknown,
@@ -268,6 +306,471 @@ function makeService(...clients: FakeClient[]) {
 
 afterEach(async () => {
   await Promise.all(services.splice(0).map((service) => service.dispose()))
+})
+
+describe('ACP forks and OpenCode child sessions', () => {
+  function status(
+    client: FakeClient,
+    rootSessionId: string,
+    childStatus: ChildSessionStatusNotification['status'],
+    childSessionId = 'child-1',
+  ) {
+    client.emitChildStatus({
+      type: 'status',
+      rootSessionId,
+      childSessionId,
+      parentSessionId: rootSessionId,
+      depth: 1,
+      title: 'Explore notes',
+      status: childStatus,
+    })
+  }
+
+  async function ready(client: FakeClient) {
+    const { service } = makeService(client)
+    const tabId = service.createTab()
+    await service.submit(tabId, 'hello', PROMPT)
+    await flushMicrotasks()
+    return { service, tabId, sessionId: service.getState(tabId)!.sessionId! }
+  }
+
+  it('forks once, replays the new session and leaves the source history untouched', async () => {
+    const client = new FakeClient('A', null, {
+      ...OPENCODE_CAPABILITIES,
+      sessionCapabilities: {
+        ...OPENCODE_CAPABILITIES.sessionCapabilities,
+        fork: {},
+      },
+    })
+    const { service, tabId, sessionId } = await ready(client)
+    const fork = deferred<{ sessionId: string }>()
+    const load = deferred<LoadSessionResponse>()
+    client.queueResponse('session/fork', fork.promise)
+    client.queueResponse('session/load', load.promise)
+    const first = service.forkTab(tabId)
+    const duplicate = service.forkTab(tabId)
+    await flushMicrotasks()
+    expect(client.countRequests('session/fork')).toBe(1)
+    fork.resolve({ sessionId: 'fork-1' })
+    await flushMicrotasks()
+    client.emitUpdate({
+      sessionId: 'fork-1',
+      update: {
+        sessionUpdate: 'user_message_chunk',
+        content: { type: 'text', text: 'copied history' },
+      },
+    })
+    load.resolve({ configOptions: [modelOption('model-b')] })
+    const forkTabId = await first
+    expect(await duplicate).toBe(forkTabId)
+    expect(service.getState(forkTabId)).toMatchObject({
+      sessionId: 'fork-1',
+      status: 'idle',
+      configOptions: [modelOption('model-b')],
+    })
+    expect(service.getState(forkTabId)?.entries).toHaveLength(1)
+    expect(service.getState(tabId)?.sessionId).toBe(sessionId)
+    expect(service.getState(tabId)?.entries).toHaveLength(1)
+    expect(client.countRequests('session/set_config_option')).toBe(0)
+    expect(client.countRequests('session/close')).toBe(0)
+  })
+
+  it('does not invoke fork on agents without the capability', async () => {
+    const client = new FakeClient('A')
+    const { service, tabId } = await ready(client)
+    expect(service.canFork(tabId)).toBe(false)
+    await expect(service.forkTab(tabId)).rejects.toThrow('unavailable')
+    expect(client.countRequests('session/fork')).toBe(0)
+  })
+
+  it('detaches a late fork when its source was closed', async () => {
+    const client = new FakeClient('A', null, {
+      ...OPENCODE_CAPABILITIES,
+      sessionCapabilities: {
+        ...OPENCODE_CAPABILITIES.sessionCapabilities,
+        fork: {},
+      },
+    })
+    const { service, tabId } = await ready(client)
+    const gate = deferred<{ sessionId: string }>()
+    client.queueResponse('session/fork', gate.promise)
+    const pending = service.forkTab(tabId)
+    const rejection = expect(pending).rejects.toThrow('closed')
+    await flushMicrotasks()
+    await service.closeTab(tabId)
+    gate.resolve({ sessionId: 'late-fork' })
+    await rejection
+    expect(service.listTabs()).toEqual([])
+    expect(client.requests).toContainEqual(
+      expect.objectContaining({
+        method: 'session/close',
+        params: { sessionId: 'late-fork' },
+      }),
+    )
+  })
+
+  it('keeps background children active after the parent turn ends, with separate transcripts', async () => {
+    const client = new FakeClient('A')
+    const { service, tabId, sessionId } = await ready(client)
+    status(client, sessionId, 'created')
+    status(client, sessionId, 'running')
+    client.emitUpdate({
+      sessionId: 'child-1',
+      update: {
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: 'child output' },
+        _meta: {
+          'openyolo/root-session': sessionId,
+          'opencode/child-session': {
+            id: 'child-1',
+            parentID: sessionId,
+            depth: 1,
+          },
+        },
+      },
+    })
+    expect(service.getState(tabId)?.status).toBe('idle')
+    expect(service.hasBackgroundActivity(tabId)).toBe(true)
+    expect(service.getRunningCount()).toBe(1)
+    expect(service.getSubagentState(tabId, 'child-1')?.entries).toEqual([
+      expect.objectContaining({ text: 'child output' }),
+    ])
+    expect(service.getState(tabId)?.entries).toHaveLength(1)
+    await service.loadSubagent(tabId, 'child-1')
+    expect(client.countRequests('session/load')).toBe(0)
+    status(client, sessionId, 'completed')
+    expect(service.getRunningCount()).toBe(0)
+    expect(
+      service.getSubagentState(tabId, 'child-1')?.entries[0],
+    ).toMatchObject({ streaming: false })
+  })
+
+  it('allows follow-ups during child work and marks only unsolicited parent replies', async () => {
+    const client = new FakeClient('A')
+    const { service, tabId, sessionId } = await ready(client)
+    const reply = (messageId: string, text: string) =>
+      client.emitUpdate({
+        sessionId,
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          messageId,
+          content: { type: 'text', text },
+        },
+      })
+    status(client, sessionId, 'running')
+    const followUp = deferred<PromptResponse>()
+    client.queueResponse('session/prompt', followUp.promise)
+    await expect(service.submit(tabId, 'follow-up', PROMPT)).resolves.toBe(
+      'accepted',
+    )
+    reply('follow-up-answer', 'Normal answer')
+    followUp.resolve({ stopReason: 'end_turn' })
+    await flushMicrotasks()
+    expect(service.getState(tabId)?.status).toBe('idle')
+    expect(service.hasBackgroundActivity(tabId)).toBe(true)
+
+    status(client, sessionId, 'completed')
+    reply('background-answer', 'Background ')
+    const nextPrompt = deferred<PromptResponse>()
+    client.queueResponse('session/prompt', nextPrompt.promise)
+    await service.submit(tabId, 'another question', PROMPT)
+    reply('background-answer', 'supplement')
+    reply('next-answer', 'Next normal answer')
+    nextPrompt.resolve({ stopReason: 'end_turn' })
+    await flushMicrotasks()
+
+    const replies = service
+      .getState(tabId)
+      ?.entries.filter((entry) => entry.kind === 'assistant')
+    expect(replies).toHaveLength(3)
+    expect(replies?.[0]).not.toHaveProperty('backgroundSupplement')
+    expect(replies?.[1]).toMatchObject({
+      backgroundSupplement: true,
+      text: 'Background supplement',
+    })
+    expect(replies?.[2]).not.toHaveProperty('backgroundSupplement')
+  })
+
+  it('does not infer background labels from history replay outside a prompt', async () => {
+    const client = new FakeClient('A')
+    const { service } = makeService(client)
+    const load = deferred<LoadSessionResponse>()
+    client.queueResponse('session/load', load.promise)
+    const opening = service.openHistoryTab('history-1', 'History')
+    await flushMicrotasks()
+    client.emitUpdate({
+      sessionId: 'history-1',
+      update: {
+        sessionUpdate: 'agent_message_chunk',
+        messageId: 'history-message',
+        content: { type: 'text', text: 'Replayed answer' },
+      },
+    })
+    load.resolve({})
+    const tabId = await opening
+    const answer = service.getState(tabId)?.entries[0]
+    expect(answer).toMatchObject({ kind: 'assistant', text: 'Replayed answer' })
+    expect(answer).not.toHaveProperty('backgroundSupplement')
+  })
+
+  it('keeps the parent attached and accepts explicit approval after the last child completes', async () => {
+    const client = new FakeClient('A')
+    const { service, tabId, sessionId } = await ready(client)
+    await expect(
+      client.requestPermission(sessionId, 'unrelated-idle-request'),
+    ).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
+    status(client, sessionId, 'created')
+    status(client, sessionId, 'completed')
+    expect(service.hasBackgroundActivity(tabId)).toBe(false)
+
+    const nextTab = service.createTab()
+    await service.closeInactiveTab(tabId)
+    expect(service.listTabs()).toEqual([{ tabId }, { tabId: nextTab }])
+    expect(client.countRequests('session/close')).toBe(0)
+
+    const ask = client.requestPermission(sessionId, 'supplement-permission')
+    expect(service.getState(tabId)?.entries).toContainEqual(
+      expect.objectContaining({
+        kind: 'tool',
+        toolCall: expect.objectContaining({
+          toolCallId: 'supplement-permission',
+          permission: expect.objectContaining({ options: expect.any(Array) }),
+        }),
+      }),
+    )
+    expect(
+      service.respondPermission(tabId, 'supplement-permission', 'once'),
+    ).toBe(true)
+    await expect(ask).resolves.toEqual({
+      outcome: { outcome: 'selected', optionId: 'once' },
+    })
+    client.emitUpdate({
+      sessionId,
+      update: {
+        sessionUpdate: 'agent_message_chunk',
+        messageId: 'late-report',
+        content: { type: 'text', text: 'Late report' },
+      },
+    })
+    expect(service.getState(tabId)?.entries).toContainEqual(
+      expect.objectContaining({
+        text: 'Late report',
+        backgroundSupplement: true,
+      }),
+    )
+    await service.closeTab(tabId)
+    expect(client.countRequests('session/close')).toBe(1)
+  })
+
+  it('discovers OpenCode 2 children from historical tool metadata and deduplicates history loads', async () => {
+    const client = new FakeClient('A')
+    const { service, tabId, sessionId } = await ready(client)
+    client.emitUpdate({
+      sessionId,
+      update: {
+        sessionUpdate: 'tool_call',
+        toolCallId: 'delegation-1',
+        title: 'subagent',
+        kind: 'other',
+        status: 'completed',
+        rawInput: {
+          agent: 'explore',
+          description: 'Explore notes',
+          prompt: 'Read notes',
+        },
+        rawOutput: {
+          metadata: { sessionID: 'child-history', status: 'running' },
+        },
+      },
+    })
+    expect(service.getState(tabId)?.subagents[0]).toMatchObject({
+      sessionId: 'child-history',
+      title: 'Explore notes',
+      status: 'unknown',
+    })
+    expect(service.hasBackgroundActivity(tabId)).toBe(false)
+    await expect(
+      service.openHistoryTab('child-history', 'Explore notes'),
+    ).resolves.toBe(tabId)
+    expect(service.listTabs()).toEqual([{ tabId }])
+    expect(client.countRequests('session/load')).toBe(0)
+    const gate = deferred<LoadSessionResponse>()
+    client.queueResponse('session/load', gate.promise)
+    const first = service.loadSubagent(tabId, 'child-history')
+    const second = service.loadSubagent(tabId, 'child-history')
+    await flushMicrotasks()
+    client.emitUpdate({
+      sessionId: 'child-history',
+      update: {
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: 'saved result' },
+      },
+    })
+    gate.resolve({})
+    await Promise.all([first, second])
+    expect(client.countRequests('session/load')).toBe(1)
+    expect(
+      service.getSubagentState(tabId, 'child-history')?.entries[0],
+    ).toMatchObject({ text: 'saved result', streaming: false })
+    expect(client.countRequests('session/close')).toBe(0)
+  })
+
+  it('releases child routes if the parent history replay fails', async () => {
+    const client = new FakeClient('A')
+    const { service } = makeService(client)
+    const load = deferred<LoadSessionResponse>()
+    client.queueResponse('session/load', load.promise)
+    const opening = service.openHistoryTab('parent-history', 'Parent history')
+    const rejected = expect(opening).rejects.toThrow('Replay failed')
+    await flushMicrotasks()
+    status(client, 'parent-history', 'completed', 'child-history')
+    load.reject(new Error('Replay failed'))
+    await rejected
+
+    const childLoad = deferred<LoadSessionResponse>()
+    client.queueResponse('session/load', childLoad.promise)
+    const reopening = service.openHistoryTab('child-history', 'Child history')
+    await flushMicrotasks()
+    client.emitUpdate({
+      sessionId: 'child-history',
+      update: {
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: 'Child reply' },
+      },
+    })
+    childLoad.resolve({})
+    const tabId = await reopening
+    expect(service.getState(tabId)?.entries).toEqual([
+      expect.objectContaining({ text: 'Child reply' }),
+    ])
+  })
+
+  it('allows and clears a background child permission in both parent and detail views', async () => {
+    const client = new FakeClient('A')
+    const { service, tabId, sessionId } = await ready(client)
+    status(client, sessionId, 'created')
+    status(client, sessionId, 'running')
+    const pending = client.requestPermission(
+      sessionId,
+      'child-1:read',
+      'child-1',
+    )
+    expect(
+      service.getSubagentState(tabId, 'child-1')?.entries[0],
+    ).toMatchObject({
+      toolCall: { permission: { options: [{ optionId: 'once' }] } },
+    })
+    expect(
+      service.respondSubagentPermission(
+        tabId,
+        'child-1',
+        'child-1:read',
+        'once',
+      ),
+    ).toBe(true)
+    await expect(pending).resolves.toEqual({
+      outcome: { outcome: 'selected', optionId: 'once' },
+    })
+    const parentEntries = service.getState(tabId)!.entries
+    expect(parentEntries[parentEntries.length - 1]).toMatchObject({
+      toolCall: { permission: null },
+    })
+    expect(
+      service.getSubagentState(tabId, 'child-1')?.entries[0],
+    ).toMatchObject({ toolCall: { permission: null } })
+  })
+
+  it('shares referenced child history with a fork and retains it after the source closes', async () => {
+    const client = new FakeClient('A')
+    const { service, tabId, sessionId } = await ready(client)
+    status(client, sessionId, 'created')
+    status(client, sessionId, 'running')
+    const nestedStatus = (id: string, state: 'created' | 'completed') =>
+      client.emitChildStatus({
+        type: 'status',
+        rootSessionId: sessionId,
+        childSessionId: id,
+        parentSessionId: 'child-1',
+        depth: 2,
+        status: state,
+      })
+    nestedStatus('nested-before-fork', 'created')
+    client.emitUpdate({
+      sessionId: 'child-1',
+      update: {
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: 'shared result' },
+      },
+    })
+    const forkTabId = service.createTab()
+    await service.submit(forkTabId, 'fork prompt', PROMPT)
+    await flushMicrotasks()
+    const forkSessionId = service.getState(forkTabId)!.sessionId!
+    // Copying history references the existing worker, without transferring it.
+    client.emitUpdate({
+      sessionId: forkSessionId,
+      update: {
+        sessionUpdate: 'tool_call',
+        toolCallId: 'copied-task',
+        title: 'subagent',
+        rawInput: { agent: 'explore', description: 'Explore', prompt: 'Read' },
+        rawOutput: { metadata: { sessionID: 'child-1', status: 'running' } },
+      },
+    })
+    expect(service.getSubagentState(forkTabId, 'child-1')).toBe(
+      service.getSubagentState(tabId, 'child-1'),
+    )
+    expect(
+      service.getSubagentState(forkTabId, 'nested-before-fork'),
+    ).not.toBeNull()
+    nestedStatus('nested-after-fork', 'created')
+    expect(
+      service.getSubagentState(forkTabId, 'nested-after-fork'),
+    ).not.toBeNull()
+    nestedStatus('nested-before-fork', 'completed')
+    nestedStatus('nested-after-fork', 'completed')
+    status(client, sessionId, 'completed')
+    expect(service.getState(forkTabId)?.subagents[0]).toMatchObject({
+      parentSessionId: forkSessionId,
+      status: 'completed',
+    })
+    await service.closeTab(tabId)
+    await service.loadSubagent(forkTabId, 'child-1')
+    expect(client.countRequests('session/load')).toBe(0)
+    expect(service.getSubagentState(forkTabId, 'child-1')?.entries).toEqual([
+      expect.objectContaining({ text: 'Read' }),
+      expect.objectContaining({ text: 'shared result', streaming: false }),
+    ])
+    await service.closeTab(forkTabId)
+    expect(service.getSubagentState(forkTabId, 'child-1')).toBeNull()
+  })
+
+  it('marks children unknown after a disconnect and ignores the old connection', async () => {
+    const first = new FakeClient('A')
+    const second = new FakeClient('B')
+    const { service } = makeService(first, second)
+    const tabId = service.createTab()
+    await service.submit(tabId, 'hello', PROMPT)
+    await flushMicrotasks()
+    const sessionId = service.getState(tabId)!.sessionId!
+    status(first, sessionId, 'created')
+    status(first, sessionId, 'running')
+    first.emitDisconnect({ kind: 'process-exit', code: 1, signal: null })
+    expect(service.getState(tabId)?.subagents[0].status).toBe('unknown')
+    await service.ensureStarted()
+    status(first, sessionId, 'running')
+    expect(service.getState(tabId)?.subagents[0].status).toBe('unknown')
+    expect(service.getRunningCount()).toBe(0)
+  })
+
+  it('does not accept child traffic for an unknown parent or another root session', async () => {
+    const client = new FakeClient('A')
+    const { service, tabId, sessionId } = await ready(client)
+    status(client, 'unknown-parent', 'created')
+    status(client, sessionId, 'created', sessionId)
+    expect(service.getState(tabId)?.subagents).toEqual([])
+    expect(service.getSubagentState(tabId, sessionId)).toBeNull()
+  })
 })
 
 describe('AcpSessionService', () => {
@@ -371,7 +874,7 @@ describe('AcpSessionService', () => {
       'session/new',
       'session/set_config_option',
     ])
-    expect(client.requests.at(-1)?.params).toEqual({
+    expect(client.requests[client.requests.length - 1]?.params).toEqual({
       sessionId: 'session-2',
       configId: 'model',
       value: 'model-b',
@@ -414,7 +917,7 @@ describe('AcpSessionService', () => {
     await Promise.all([changingModel, staleEffort])
 
     expect(client.countRequests('session/set_config_option')).toBe(1)
-    expect(client.requests.at(-1)?.params).toEqual({
+    expect(client.requests[client.requests.length - 1]?.params).toEqual({
       sessionId: 'session-1',
       configId: 'model',
       value: 'model-b',

@@ -6,13 +6,14 @@ import type {
   SessionUpdate,
   StopReason,
   ToolCallUpdate,
-} from '@agentclientprotocol/sdk'
+} from '@agentclientprotocol/sdk/unstable'
 
 import type {
   ChatAssistantEntry,
   ChatSessionState,
   ChatToolEntry,
   ChatUserEntry,
+  SubagentInfo,
   ToolCallState,
 } from '../../types/chat'
 
@@ -62,6 +63,7 @@ export function createInitialSessionState(title: string): ChatSessionState {
     commands: [],
     configOptions: [],
     lastStopReason: null,
+    subagents: [],
   }
 }
 
@@ -146,6 +148,21 @@ export class SessionStateStore {
     this.emit()
   }
 
+  upsertSubagent(info: SubagentInfo) {
+    const exists = this.state.subagents.some(
+      (child) => child.sessionId === info.sessionId,
+    )
+    this.state = {
+      ...this.state,
+      subagents: exists
+        ? this.state.subagents.map((child) =>
+            child.sessionId === info.sessionId ? info : child,
+          )
+        : [...this.state.subagents, info],
+    }
+    this.emit()
+  }
+
   setModeCurrent(modeId: string) {
     const current = this.state.mode
     this.state = {
@@ -177,6 +194,21 @@ export class SessionStateStore {
       blocks: nonTextBlocks(blocks),
     }
     this.state = { ...this.state, entries: [...this.state.entries, entry] }
+    this.emit()
+  }
+
+  prependUserContext(text: string) {
+    if (!text || this.state.entries.some((entry) => entry.kind === 'user'))
+      return
+    const entry: ChatUserEntry = {
+      kind: 'user',
+      id: nextEntryId(),
+      messageId: null,
+      timestamp: Date.now(),
+      text,
+      blocks: [],
+    }
+    this.state = { ...this.state, entries: [entry, ...this.state.entries] }
     this.emit()
   }
 
@@ -236,7 +268,7 @@ export class SessionStateStore {
     this.emit()
   }
 
-  applyUpdate(update: SessionUpdate) {
+  applyUpdate(update: SessionUpdate, backgroundSupplement = false) {
     switch (update.sessionUpdate) {
       case 'user_message_chunk':
         this.applyUserChunk(update.messageId ?? null, update.content)
@@ -247,11 +279,17 @@ export class SessionStateStore {
           update.messageId ?? null,
           update.content,
           false,
+          backgroundSupplement,
         )
         break
       case 'agent_thought_chunk':
         this.markResponseStarted()
-        this.applyAssistantChunk(update.messageId ?? null, update.content, true)
+        this.applyAssistantChunk(
+          update.messageId ?? null,
+          update.content,
+          true,
+          backgroundSupplement,
+        )
         break
       case 'tool_call':
         this.markResponseStarted()
@@ -405,6 +443,7 @@ export class SessionStateStore {
     messageId: string | null,
     content: ContentBlock,
     isThought: boolean,
+    backgroundSupplement: boolean,
   ) {
     if (isSyntheticContent(content)) return
     const existingId = messageId
@@ -445,6 +484,7 @@ export class SessionStateStore {
       reasoning: isThought ? textOfContent(content) : '',
       blocks: isThought || content.type === 'text' ? [] : [content],
       streaming: true,
+      ...(backgroundSupplement ? { backgroundSupplement: true } : {}),
     }
     if (messageId) this.assistantEntryByMessageId.set(messageId, entry.id)
     else this.fallbackAssistantEntryId = entry.id

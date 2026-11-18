@@ -1,4 +1,4 @@
-import type { ContentBlock } from '@agentclientprotocol/sdk'
+import type { ContentBlock } from '@agentclientprotocol/sdk/unstable'
 import { Brain, ChevronDown, ChevronRight } from 'lucide-react'
 import { memo, useState } from 'react'
 
@@ -178,6 +178,12 @@ export const AssistantEntryView = memo(function AssistantEntryView({
             </div>
           ) : null}
         </div>
+      ) : null}
+      {entry.backgroundSupplement &&
+      (entry.text || nonTextBlocks.length > 0) ? (
+        <span className="yolo-assistant-background-label">
+          {t('chat.backgroundSupplement')}
+        </span>
       ) : null}
       {entry.text ? (
         <StreamingMarkdown content={entry.text} streaming={entry.streaming} />

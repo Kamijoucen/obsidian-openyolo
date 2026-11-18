@@ -10,7 +10,7 @@ import type {
   ToolCallStatus,
   ToolKind,
   UsageUpdate,
-} from '@agentclientprotocol/sdk'
+} from '@agentclientprotocol/sdk/unstable'
 
 export type PendingPermission = {
   options: PermissionOption[]
@@ -57,6 +57,7 @@ export type ChatAssistantEntry = {
   reasoning: string
   blocks: ContentBlock[]
   streaming: boolean
+  backgroundSupplement?: boolean
 }
 
 export type ChatToolEntry = {
@@ -76,6 +77,18 @@ export type SessionModeState = {
   available: SessionMode[]
 }
 
+export type SubagentStatus =
+  'created' | 'running' | 'completed' | 'failed' | 'interrupted' | 'unknown'
+
+export type SubagentInfo = {
+  sessionId: string
+  parentSessionId: string
+  title: string
+  depth: number
+  status: SubagentStatus
+  error: string | null
+}
+
 export type ChatSessionState = {
   sessionId: string | null
   title: string
@@ -89,6 +102,7 @@ export type ChatSessionState = {
   commands: AvailableCommand[]
   configOptions: SessionConfigOption[]
   lastStopReason: StopReason | null
+  subagents: SubagentInfo[]
 }
 
 export type HistorySessionInfo = {

@@ -1,12 +1,17 @@
-import * as acp from '@agentclientprotocol/sdk'
+import * as acp from '@agentclientprotocol/sdk/unstable'
 import type {
   AgentCapabilities,
   Implementation,
   RequestPermissionRequest,
   SendRequestOptions,
   SessionNotification,
-} from '@agentclientprotocol/sdk'
+} from '@agentclientprotocol/sdk/unstable'
 
+import {
+  CHILD_SESSION_CAPABILITY,
+  withChildSessionUpdates,
+} from './childSessions'
+import type { ChildSessionStatusNotification } from './childSessions'
 import type { FsBridge } from './fsBridge'
 import type { PermissionManager } from './permissions'
 import { resolveOpencodeBinary, spawnOpencodeAcp } from './process'
@@ -45,6 +50,7 @@ export type AcpClientHooks = {
   isSessionActive?: (sessionId: string) => boolean
   canRequestPermission?: (params: RequestPermissionRequest) => boolean
   onSessionUpdate: (notification: SessionNotification) => void
+  onChildSessionStatus?: (notification: ChildSessionStatusNotification) => void
   onPermissionPending: (params: RequestPermissionRequest) => void
   onPermissionSettled: (sessionId: string, toolCallId: string) => void
   onStderr?: (line: string) => void
@@ -257,9 +263,14 @@ export class AcpClient implements AcpClientPort {
         })
       }
 
-      const stream = acp.ndJsonStream(
-        nodeWritableToWeb(child.stdin),
-        nodeReadableToWeb(child.stdout),
+      const stream = withChildSessionUpdates(
+        acp.ndJsonStream(
+          nodeWritableToWeb(child.stdin, (error) => {
+            if (this.child === child) this.connection?.close(error)
+          }),
+          nodeReadableToWeb(child.stdout),
+        ),
+        (event) => hooks.onChildSessionStatus?.(event),
       )
       const app = acp
         .client({ name: this.options.clientName })
@@ -326,6 +337,7 @@ export class AcpClient implements AcpClientPort {
             clientCapabilities: {
               fs: { readTextFile: true, writeTextFile: true },
               terminal: false,
+              _meta: { [CHILD_SESSION_CAPABILITY]: true },
             },
             clientInfo: {
               name: this.options.clientName,

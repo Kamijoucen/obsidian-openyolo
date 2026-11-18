@@ -48,9 +48,7 @@ export function createTranslationFunction(language: Language) {
 }
 
 export function getUiLanguage(): Language {
-  const raw = String(document.querySelector('html')?.getAttribute('lang') ?? '')
-    .trim()
-    .toLowerCase()
+  const raw = String(activeDocument.documentElement.lang).trim().toLowerCase()
   return raw.startsWith('zh') ? 'zh' : 'en'
 }
 
